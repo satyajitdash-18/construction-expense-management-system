@@ -1,0 +1,163 @@
+from typing import TYPE_CHECKING
+from uuid import UUID
+
+from sqlalchemy import and_, cast, func, select
+from sqlalchemy.dialects.postgresql import ENUM
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.models.enums import LifecycleStatus as LifecycleStatusEnum
+from app.models.expense import Expense
+from app.models.project import Project
+from app.models.project_budget import ProjectBudget
+
+if TYPE_CHECKING:
+    from app.models.expense import Expense
+    from app.models.project_budget import ProjectBudget
+
+
+# Create the enum type for casting
+lifecycle_status_pg_enum = ENUM(
+    *[s.value for s in LifecycleStatusEnum],
+    name="lifecyclestatus",
+    create_type=False
+)
+
+
+class ProjectRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_id(self, project_id: UUID) -> Project | None:
+        result = await self.session.execute(
+            select(Project)
+            .options(selectinload(Project.budgets), selectinload(Project.ledger_accounts))
+            .where(Project.id == project_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_code(self, code: str) -> Project | None:
+        result = await self.session.execute(
+            select(Project).where(Project.code == code)
+        )
+        return result.scalar_one_or_none()
+
+    async def list(
+        self,
+        status_filter: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Project]:
+        query = select(Project).options(selectinload(Project.budgets))
+        if status_filter:
+            query = query.where(Project.status == status_filter)
+        query = query.order_by(Project.created_at.desc()).limit(limit).offset(offset)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def count(self, status_filter: str | None = None) -> int:
+        query = select(func.count(Project.id))
+        if status_filter:
+            query = query.where(Project.status == status_filter)
+        result = await self.session.execute(query)
+        return result.scalar_one()
+
+    async def create(
+        self,
+        name: str,
+        code: str,
+        created_by: UUID,
+        status: str = "active",
+    ) -> Project:
+        project = Project(
+            name=name,
+            code=code,
+            created_by=created_by,
+            status=status,
+        )
+        self.session.add(project)
+        await self.session.flush()
+        return project
+
+    async def update(self, project: Project) -> Project:
+        await self.session.flush()
+        return project
+
+    async def delete(self, project: Project) -> None:
+        await self.session.delete(project)
+        await self.session.flush()
+
+    async def get_budget_vs_actual(self, project_id: UUID) -> dict:
+        """Get budget vs actual for a project."""
+        project = await self.get_by_id(project_id)
+        if not project:
+            return {}
+
+        # Get all budgets for the project
+        budgets_result = await self.session.execute(
+            select(ProjectBudget).where(ProjectBudget.project_id == project_id)
+        )
+        budgets = list(budgets_result.scalars().all())
+
+        # Get actual expenses (only POSTED/RECONCILED)
+        expenses_result = await self.session.execute(
+            select(
+                Expense.category_id,
+                func.sum(Expense.total).label("actual_total"),
+            )
+            .where(
+                and_(
+                    Expense.project_id == project_id,
+                    cast(Expense.lifecycle_status, lifecycle_status_pg_enum).in_(
+                        [LifecycleStatusEnum.POSTED, LifecycleStatusEnum.RECONCILED]
+                    ),
+                )
+            )
+            .group_by(Expense.category_id)
+        )
+        actuals = {row.category_id: row.actual_total for row in expenses_result.all()}
+
+        # Build budget vs actual
+        budget_vs_actual: list[dict] = []
+        total_budget: float = 0.0
+        total_actual: float = 0.0
+
+        for budget in budgets:
+            actual = actuals.get(budget.category_id, 0)
+            budget_vs_actual.append({
+                "category_id": str(budget.category_id) if budget.category_id else None,
+                "budget": float(budget.amount),
+                "actual": float(actual) if actual else 0.0,
+                "variance": float(budget.amount - (actual or 0)),
+                "currency": budget.currency,
+                "effective_from": budget.effective_from.isoformat() if budget.effective_from else None,
+                "effective_to": budget.effective_to.isoformat() if budget.effective_to else None,
+            })
+            total_budget += float(budget.amount)
+            total_actual += float(actual) if actual else 0.0
+
+        # Add overall project budget (category_id is None)
+        overall_budget = next((b for b in budgets if b.category_id is None), None)
+        if overall_budget:
+            total_budget = float(overall_budget.amount)
+            # Recalculate actuals for overall
+            total_expenses_result = await self.session.execute(
+                select(func.sum(Expense.total))
+                .where(
+                    and_(
+                        Expense.project_id == project_id,
+                        cast(Expense.lifecycle_status, lifecycle_status_pg_enum).in_(
+                            [LifecycleStatusEnum.POSTED, LifecycleStatusEnum.RECONCILED]
+                        ),
+                    )
+                )
+            )
+            total_actual = float(total_expenses_result.scalar_one_or_none() or 0.0)
+
+        return {
+            "project_id": str(project_id),
+            "total_budget": total_budget,
+            "total_actual": total_actual,
+            "remaining": total_budget - total_actual,
+            "by_category": budget_vs_actual,
+        }

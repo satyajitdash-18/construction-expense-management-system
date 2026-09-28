@@ -1,0 +1,326 @@
+{
+  "dashboard": {
+    "title": "Construction Expense Management - System Monitoring",
+    "tags": ["construction-expense", "production", "monitoring"],
+    "timezone": "UTC",
+    "panels": [
+      {
+        "id": 1,
+        "title": "API Health Status",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "up{job=\"construction-expense-api\"}",
+            "legendFormat": "API Up"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {"type": "value", "options": {"1": {"text": "UP", "color": "green"}, "0": {"text": "DOWN", "color": "red"}}}
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "red", "value": null},
+                {"color": "green", "value": 1}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "HTTP Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[5m])",
+            "legendFormat": "{{method}} {{endpoint}}"
+          }
+        ],
+        "yAxes": [
+          {"format": "reqps"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 3,
+        "title": "HTTP Error Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{status=~\"5..\"}[5m])",
+            "legendFormat": "5xx Errors"
+          },
+          {
+            "expr": "rate(http_requests_total{status=~\"4..\"}[5m])",
+            "legendFormat": "4xx Errors"
+          }
+        ],
+        "yAxes": [
+          {"format": "reqps"},
+          {"format": "short"}
+        ],
+        "alert": {
+          "name": "HighErrorRate",
+          "condition": "avg(rate(http_requests_total{status=~\"5..\"}[5m])) > 0.05",
+          "for": "5m",
+          "severity": "critical"
+        }
+      },
+      {
+        "id": 4,
+        "title": "Request Latency (p50, p95, p99)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "p50"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "p95"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "p99"
+          }
+        ],
+        "yAxes": [
+          {"format": "seconds"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Database Connections",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "db_connections_active",
+            "legendFormat": "Active"
+          },
+          {
+            "expr": "db_connections_idle",
+            "legendFormat": "Idle"
+          }
+        ],
+        "yAxes": [
+          {"format": "short"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Database Query Latency",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(db_query_duration_seconds_bucket[5m]))",
+            "legendFormat": "p95"
+          }
+        ],
+        "yAxes": [
+          {"format": "seconds"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Celery Workers Online",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "celery_workers_online",
+            "legendFormat": "Workers"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Celery Task Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(celery_tasks_total[5m])",
+            "legendFormat": "{{task_name}} - {{status}}"
+          }
+        ],
+        "yAxes": [
+          {"format": "reqps"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Celery Task Duration (p95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(celery_task_duration_seconds_bucket[5m]))",
+            "legendFormat": "{{task_name}}"
+          }
+        ],
+        "yAxes": [
+          {"format": "seconds"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Active Celery Tasks by Queue",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "celery_tasks_active",
+            "legendFormat": "{{queue}}"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Business Metrics - Expenses",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(expenses_created_total[1h])",
+            "legendFormat": "Created/hr"
+          },
+          {
+            "expr": "rate(expenses_reconciled_total[1h])",
+            "legendFormat": "Reconciled/hr"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "title": "OCR & Extraction Jobs",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(ocr_jobs_total[1h])",
+            "legendFormat": "OCR - {{status}}"
+          },
+          {
+            "expr": "rate(extraction_jobs_total[1h])",
+            "legendFormat": "Extraction - {{status}}"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "title": "Reconciliation Matches",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(reconciliation_matches_total[1h])",
+            "legendFormat": "{{match_basis}}"
+          }
+        ]
+      },
+      {
+        "id": 13,
+        "title": "Webhook Deliveries",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(webhook_deliveries_total[5m])",
+            "legendFormat": "{{webhook_id}} - {{success}}"
+          }
+        ]
+      },
+      {
+        "id": 14,
+        "title": "Notifications Sent",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(notification_sent_total[5m])",
+            "legendFormat": "{{channel}} - {{status}}"
+          }
+        ]
+      },
+      {
+        "id": 15,
+        "title": "System Resources",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "process_cpu_seconds_total",
+            "legendFormat": "CPU"
+          },
+          {
+            "expr": "process_resident_memory_bytes / 1024 / 1024",
+            "legendFormat": "Memory (MB)"
+          }
+        ]
+      },
+      {
+        "id": 16,
+        "title": "Service Health Checks",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "service_health_status",
+            "format": "table",
+            "legendFormat": "{{service}}"
+          }
+        ]
+      },
+      {
+        "id": 17,
+        "title": "Health Check Duration",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(health_check_duration_seconds_sum[5m]) / rate(health_check_duration_seconds_count[5m])",
+            "legendFormat": "{{service}}"
+          }
+        ],
+        "yAxes": [
+          {"format": "seconds"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 18,
+        "title": "GDPR Requests",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(gdpr_requests_total[1h])",
+            "legendFormat": "{{request_type}} - {{status}}"
+          }
+        ]
+      },
+      {
+        "id": 19,
+        "title": "Audit Reports Generated",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(audit_reports_generated_total[1h])",
+            "legendFormat": "{{report_type}} - {{format}} - {{status}}"
+          }
+        ]
+      },
+      {
+        "id": 20,
+        "title": "Retention Policies Executed",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(retention_policies_executed_total[1h])",
+            "legendFormat": "{{policy_id}} - {{status}}"
+          }
+        ]
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "30s"
+  }
+}

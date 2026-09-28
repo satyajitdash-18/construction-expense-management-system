@@ -1,0 +1,70 @@
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+
+# Node / Frontend
+node_modules/
+.next/
+out/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
+
+# Logs
+*.log
+logs/
+
+# Databases / Local data
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Uploaded / Generated files
+uploads/
+backend/uploads/
+storage/
+backend/storage/
+media/
+backend/media/
+tmp/
+temp/
+
+# Docker generated data
+docker-data/
+postgres-data/
+pgdata/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage / Reports
+coverage/
