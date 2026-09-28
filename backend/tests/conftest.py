@@ -1,14 +1,16 @@
 import os
-os.environ["TESTING"] = "1"
-import itertools
-import pytest
 
+os.environ["TESTING"] = "1"
+
+import itertools  # noqa: E402 — must come after env setup
+
+import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from uuid import UUID, uuid4
-
 from sqlalchemy.pool import NullPool
+from uuid import uuid4
+
 from app.core.config import settings
 from app.core.database import Base, get_db
 from app.core.security import create_access_token
@@ -22,10 +24,6 @@ from app.services.auth import AuthService
 
 # Use the container's internal database URL when running inside Docker
 TEST_DATABASE_URL = settings.DATABASE_URL
-
-
-
-_user_counter = itertools.count()
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -49,16 +47,37 @@ async def db_session(test_engine):
 async def override_db_dependency(db_session):
     async def _get_db():
         yield db_session
+
     app.dependency_overrides[get_db] = _get_db
     yield
     app.dependency_overrides.pop(get_db, None)
 
+
+@pytest_asyncio.fixture(autouse=True)
+async def reset_rate_limiter():
+    """Reset the in-memory rate limiter state before (and after) each test.
+
+    The ``RateLimiter`` singleton keeps a sliding-window timestamp cache in
+    memory when Redis is unavailable. Because all TestClient requests share
+    the same loopback IP, the accumulated count bleeds across tests and causes
+    spurious 429 responses for tests that run later in the session.
+
+    This fixture calls ``rate_limiter.reset()`` — the same public method used
+    by production management tooling — so the cache is empty at the start of
+    every test.  Rate limiting logic itself is **not** disabled or modified.
+    """
+    from app.core.rate_limit import rate_limiter
+
+    await rate_limiter.reset()
+    yield
+    await rate_limiter.reset()
 
 
 @pytest_asyncio.fixture
 async def async_client():
     try:
         from httpx import ASGITransport
+
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             yield client
     except (ImportError, TypeError):
@@ -66,15 +85,10 @@ async def async_client():
             yield client
 
 
-
-_user_counter = itertools.count()
-
-
 @pytest_asyncio.fixture
 async def test_user(db_session):
     """Create a test user with project_manager role."""
     auth_service = AuthService(db_session)
-    # Use UUID to generate unique email
     user = await auth_service.create_user(
         email=f"test_{uuid4()}@example.com",
         password="testpass123",

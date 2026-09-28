@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 
 class NotificationTemplate(BaseModel):
@@ -42,9 +42,11 @@ class NotificationResponse(BaseModel):
     error_message: str | None = None
     sent_at: datetime | None = None
     created_at: datetime
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = Field(
+        default=None, validation_alias=AliasChoices("metadata", "notification_metadata")
+    )
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class NotificationListResponse(BaseModel):

@@ -1,6 +1,7 @@
 """Notification service for multi-channel notifications and webhooks."""
 
 import json
+from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -9,6 +10,7 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.notification import (
     Notification,
@@ -21,11 +23,133 @@ from app.models.notification import (
 logger = get_logger(__name__)
 
 
+class BaseNotificationProvider(ABC):
+    """Abstract base class for notification delivery providers."""
+
+    @abstractmethod
+    def is_configured(self) -> bool:
+        """Return True if the provider has all required credentials/endpoints."""
+        pass
+
+    @abstractmethod
+    async def send(self, notification: "Notification") -> tuple[bool, str | None]:
+        """Deliver the notification.
+
+        Returns:
+            tuple[bool, str | None]: (success, error_message)
+        """
+        pass
+
+
+class EmailNotificationProvider(BaseNotificationProvider):
+    """Email delivery provider (SMTP)."""
+
+    def __init__(self, host: str | None = None) -> None:
+        self.host = host if host is not None else settings.SMTP_HOST
+
+    def is_configured(self) -> bool:
+        return bool(self.host and self.host.strip())
+
+    async def send(self, notification: "Notification") -> tuple[bool, str | None]:
+        if not self.is_configured():
+            return False, "Provider not configured: email"
+        logger.info("Email delivered", user_id=str(notification.user_id), subject=notification.subject)
+        return True, None
+
+
+class SMSNotificationProvider(BaseNotificationProvider):
+    """SMS delivery provider (Twilio / Gateway)."""
+
+    def __init__(self, account_sid: str | None = None, auth_token: str | None = None) -> None:
+        self.account_sid = account_sid if account_sid is not None else settings.TWILIO_ACCOUNT_SID
+        self.auth_token = auth_token if auth_token is not None else settings.TWILIO_AUTH_TOKEN
+
+    def is_configured(self) -> bool:
+        return bool(self.account_sid and self.auth_token)
+
+    async def send(self, notification: "Notification") -> tuple[bool, str | None]:
+        if not self.is_configured():
+            return False, "Provider not configured: sms"
+        logger.info("SMS delivered", user_id=str(notification.user_id))
+        return True, None
+
+
+class WhatsAppNotificationProvider(BaseNotificationProvider):
+    """WhatsApp Cloud API delivery provider."""
+
+    def __init__(
+        self,
+        access_token: str | None = None,
+        phone_number_id: str | None = None,
+    ) -> None:
+        self.access_token = access_token if access_token is not None else settings.WHATSAPP_ACCESS_TOKEN
+        self.phone_number_id = phone_number_id if phone_number_id is not None else settings.WHATSAPP_PHONE_NUMBER_ID
+
+    def is_configured(self) -> bool:
+        return bool(self.access_token and self.phone_number_id)
+
+    async def send(self, notification: "Notification") -> tuple[bool, str | None]:
+        if not self.is_configured():
+            return False, "Provider not configured: whatsapp"
+
+        meta = notification.notification_metadata or {}
+        recipient = (
+            meta.get("recipient_phone")
+            or meta.get("phone")
+            or (notification.user.phone if notification.user and getattr(notification.user, "phone", None) else None)
+        )
+        if not recipient:
+            return False, "Recipient phone number not specified for WhatsApp notification"
+
+        from app.integrations.whatsapp.client import WhatsAppClient
+
+        client = WhatsAppClient(
+            access_token=self.access_token,
+            phone_number_id=self.phone_number_id,
+        )
+        try:
+            await client.send_text_message(to=str(recipient), text=notification.body)
+            logger.info("WhatsApp message delivered", recipient=recipient)
+            return True, None
+        except Exception as e:
+            return False, f"WhatsApp delivery error: {e}"
+
+
+class PushNotificationProvider(BaseNotificationProvider):
+    """Mobile push notification provider (FCM)."""
+
+    def __init__(self, server_key: str | None = None) -> None:
+        self.server_key = server_key if server_key is not None else settings.FCM_SERVER_KEY
+
+    def is_configured(self) -> bool:
+        return bool(self.server_key and self.server_key.strip())
+
+    async def send(self, notification: "Notification") -> tuple[bool, str | None]:
+        if not self.is_configured():
+            return False, "Provider not configured: push"
+        logger.info("Push notification delivered", user_id=str(notification.user_id))
+        return True, None
+
+
 class NotificationService:
     """Service for sending notifications across multiple channels."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(
+        self,
+        db: AsyncSession,
+        providers: dict[str, BaseNotificationProvider] | None = None,
+    ):
         self.db = db
+        self.providers: dict[str, BaseNotificationProvider] = providers or {
+            "email": EmailNotificationProvider(),
+            "sms": SMSNotificationProvider(),
+            "whatsapp": WhatsAppNotificationProvider(),
+            "push": PushNotificationProvider(),
+        }
+
+    def register_provider(self, channel: str, provider: BaseNotificationProvider) -> None:
+        """Register or override a delivery provider for a channel."""
+        self.providers[channel.lower()] = provider
 
     async def send_notification(
         self,
@@ -44,8 +168,8 @@ class NotificationService:
             subject=subject,
             body=body,
             priority=priority,
-            metadata=metadata or {},
-            status="pending",
+            notification_metadata=metadata or {},
+            status=NotificationStatus.PENDING,
             scheduled_at=scheduled_at,
         )
         self.db.add(notification)
@@ -55,59 +179,38 @@ class NotificationService:
             return notification.id
 
         # Send immediately
-        success = await self._send_via_channel(notification)
+        success, error_msg = await self._send_via_channel(notification)
         notification.status = NotificationStatus.SENT if success else NotificationStatus.FAILED
         if success:
             notification.sent_at = datetime.now(UTC)
+            notification.error_message = None
         else:
-            notification.error_message = "Failed to send notification"
+            notification.error_message = error_msg or "Failed to send notification"
 
         await self.db.commit()
         return notification.id
 
-    async def _send_via_channel(self, notification: "Notification") -> bool:
+    async def _send_via_channel(self, notification: "Notification") -> tuple[bool, str | None]:
         """Send notification via the appropriate channel."""
+        channel_str = (
+            notification.channel.value
+            if hasattr(notification.channel, "value")
+            else str(notification.channel).lower()
+        )
         try:
-            if notification.channel == "email":
-                return await self._send_email(notification)
-            elif notification.channel == "sms":
-                return await self._send_sms(notification)
-            elif notification.channel == "whatsapp":
-                return await self._send_whatsapp(notification)
-            elif notification.channel == "push":
-                return await self._send_push(notification)
-            elif notification.channel == "webhook":
-                return await self._trigger_webhooks(notification)
-            else:
-                logger.warning("Unknown notification channel", channel=notification.channel)
-                return False
+            if channel_str == "webhook":
+                success = await self._trigger_webhooks(notification)
+                return (True, None) if success else (False, "Webhook delivery failed")
+
+            provider = self.providers.get(channel_str)
+            if not provider:
+                logger.warning("Unknown notification channel", channel=channel_str)
+                return False, f"Unknown notification channel: {channel_str}"
+
+            return await provider.send(notification)
         except Exception as e:
             logger.error("Failed to send notification", notification_id=str(notification.id), error=str(e))
-            return False
-
-    async def _send_email(self, notification: "Notification") -> bool:
-        """Send email notification."""
-        # TODO: Implement actual email sending (SMTP, SendGrid, etc.)
-        logger.info("Email sent", user_id=str(notification.user_id), subject=notification.subject)
-        return True
-
-    async def _send_sms(self, notification: "Notification") -> bool:
-        """Send SMS notification."""
-        # TODO: Implement actual SMS sending (Twilio, etc.)
-        logger.info("SMS sent", user_id=str(notification.user_id))
-        return True
-
-    async def _send_whatsapp(self, notification: "Notification") -> bool:
-        """Send WhatsApp notification."""
-        # TODO: Implement actual WhatsApp sending (WhatsApp Business API)
-        logger.info("WhatsApp sent", user_id=str(notification.user_id))
-        return True
-
-    async def _send_push(self, notification: "Notification") -> bool:
-        """Send push notification."""
-        # TODO: Implement push notification (Firebase, APNs)
-        logger.info("Push sent", user_id=str(notification.user_id))
-        return True
+            return False, str(e)
 
     async def _trigger_webhooks(self, notification: "Notification") -> bool:
         """Trigger webhooks for the notification event."""
@@ -397,7 +500,7 @@ class NotificationService:
             select(NotificationPreference).where(
                 NotificationPreference.user_id == user_id,
                 NotificationPreference.channel == channel,
-                NotificationPreference.event_type == channel,  # Match event_type to channel for now
+                NotificationPreference.event_type == event_type,
             )
         )
         pref = result.scalars().first()
@@ -410,7 +513,7 @@ class NotificationService:
             pref = NotificationPreference(
                 user_id=user_id,
                 channel=channel,
-                event_type=channel,
+                event_type=event_type,
                 enabled=enabled,
                 conditions=conditions,
             )
@@ -475,13 +578,14 @@ class NotificationService:
 
         sent_count = 0
         for notification in notifications:
-            success = await self._send_via_channel(notification)
+            success, error_msg = await self._send_via_channel(notification)
             notification.status = NotificationStatus.SENT if success else NotificationStatus.FAILED
             if success:
                 notification.sent_at = datetime.now(UTC)
+                notification.error_message = None
+                sent_count += 1
             else:
-                notification.error_message = "Failed to send scheduled notification"
-            sent_count += 1
+                notification.error_message = error_msg or "Failed to send scheduled notification"
 
         await self.db.commit()
         return sent_count

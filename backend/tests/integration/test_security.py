@@ -215,13 +215,79 @@ class TestRateLimiting:
 
     @pytest.mark.asyncio
     async def test_rate_limit_enforced(self, async_client: AsyncClient):
-        """Test that rate limiting is enforced."""
-        for _ in range(100):
-            response = await async_client.get("/api/v1/health", follow_redirects=True)
-            if response.status_code == 429:
-                return
+        """Test that rate limiting is enforced on sensitive endpoints."""
+        from app.core.rate_limit import rate_limiter
 
-        pytest.skip("Rate limiting not configured or threshold not reached")
+        await rate_limiter.reset()
+
+        hit_429 = False
+        rate_limit_resp = None
+        # /api/v1/auth/login has a limit of 5 requests per minute
+        for i in range(10):
+            response = await async_client.post(
+                "/api/v1/auth/login",
+                data={"username": f"user{i}@example.com", "password": "wrongpassword"},
+                headers={"X-Forwarded-For": "198.51.100.1"},
+                follow_redirects=True,
+            )
+            if response.status_code == 429:
+                hit_429 = True
+                rate_limit_resp = response
+                break
+
+        assert hit_429, "Expected rate limit (HTTP 429) to be triggered within 10 requests"
+        assert rate_limit_resp is not None
+        assert "Retry-After" in rate_limit_resp.headers
+        assert int(rate_limit_resp.headers["Retry-After"]) >= 1
+        assert rate_limit_resp.headers.get("X-RateLimit-Limit") == "5"
+        assert rate_limit_resp.headers.get("X-RateLimit-Remaining") == "0"
+        assert "X-RateLimit-Reset" in rate_limit_resp.headers
+        assert rate_limit_resp.json()["detail"] == "Rate limit exceeded. Please try again later."
+
+    @pytest.mark.asyncio
+    async def test_internal_health_route_preservation(self, async_client: AsyncClient):
+        """Test that internal infrastructure routes like /health are exempt from rate limiting."""
+        for _ in range(60):
+            response = await async_client.get(
+                "/api/v1/health",
+                headers={"X-Forwarded-For": "198.51.100.2"},
+                follow_redirects=True,
+            )
+            assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_ip_isolation(self, async_client: AsyncClient):
+        """Test that rate limits are isolated per client IP."""
+        from app.core.rate_limit import rate_limiter
+
+        await rate_limiter.reset()
+
+        # Exhaust IP 1
+        for _ in range(6):
+            await async_client.post(
+                "/api/v1/auth/login",
+                data={"username": "user1@example.com", "password": "wrongpassword"},
+                headers={"X-Forwarded-For": "198.51.100.10"},
+                follow_redirects=True,
+            )
+
+        # IP 1 is blocked
+        resp_ip1 = await async_client.post(
+            "/api/v1/auth/login",
+            data={"username": "user1@example.com", "password": "wrongpassword"},
+            headers={"X-Forwarded-For": "198.51.100.10"},
+            follow_redirects=True,
+        )
+        assert resp_ip1.status_code == 429
+
+        # IP 2 is not blocked
+        resp_ip2 = await async_client.post(
+            "/api/v1/auth/login",
+            data={"username": "user2@example.com", "password": "wrongpassword"},
+            headers={"X-Forwarded-For": "198.51.100.20"},
+            follow_redirects=True,
+        )
+        assert resp_ip2.status_code != 429
 
 
 class TestAuditLoggingSecurity:

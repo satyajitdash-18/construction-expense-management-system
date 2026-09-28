@@ -34,6 +34,7 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
+from app.core.rate_limit import RateLimitMiddleware
 
 setup_logging()
 
@@ -73,6 +74,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RateLimitMiddleware)
 
 if settings.SENTRY_DSN:
     app.add_middleware(SentryAsgiMiddleware)  # type: ignore[arg-type]

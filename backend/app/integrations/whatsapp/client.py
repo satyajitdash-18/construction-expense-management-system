@@ -35,9 +35,15 @@ class WhatsAppClient:
         app_secret: str | None = None,
     ) -> None:
         self.access_token = access_token or settings.WHATSAPP_ACCESS_TOKEN or settings.WHATSAPP_APP_SECRET
-        self.phone_number_id = phone_number_id or settings.WHATSAPP_PHONE_NUMBER_ID
+        phone_id = (phone_number_id or settings.WHATSAPP_PHONE_NUMBER_ID or "").strip("/")
+        self.phone_number_id = phone_id
         self.app_secret = app_secret or settings.WHATSAPP_APP_SECRET
-        self.base_url = f"https://graph.facebook.com/v20.0/{self.phone_number_id}"
+        self.base_url = f"https://graph.facebook.com/v20.0/{self.phone_number_id}/" if self.phone_number_id else "https://graph.facebook.com/v20.0/"
+
+    @property
+    def messages_url(self) -> str:
+        """Endpoint for sending messages, media, templates, and read receipts."""
+        return f"https://graph.facebook.com/v20.0/{self.phone_number_id}/messages"
 
     def _get_headers(self) -> dict[str, str]:
         return {
@@ -47,7 +53,7 @@ class WhatsAppClient:
 
     async def send_text_message(self, to: str, body: str) -> dict[str, Any]:
         """Send a text message."""
-        url = urljoin(self.base_url, "messages")
+        url = self.messages_url
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
@@ -60,7 +66,7 @@ class WhatsAppClient:
         self, to: str, template_name: str, language_code: str = "en", components: list[dict] | None = None
     ) -> dict[str, Any]:
         """Send a template message."""
-        url = urljoin(self.base_url, "messages")
+        url = self.messages_url
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
@@ -78,7 +84,7 @@ class WhatsAppClient:
         self, to: str, media_type: str, media_id: str, caption: str | None = None
     ) -> dict[str, Any]:
         """Send a media message (image, document, etc.)."""
-        url = urljoin(self.base_url, "messages")
+        url = self.messages_url
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
@@ -91,7 +97,7 @@ class WhatsAppClient:
 
     async def mark_as_read(self, message_id: str) -> dict[str, Any]:
         """Mark a message as read."""
-        url = urljoin(self.base_url, "messages")
+        url = self.messages_url
         payload = {
             "messaging_product": "whatsapp",
             "status": "read",

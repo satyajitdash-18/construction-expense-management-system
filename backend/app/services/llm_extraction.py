@@ -1,16 +1,71 @@
 """LLM extraction service with provider abstraction (OpenAI, Gemini, Anthropic)."""
 
 import json
+import re
 from abc import ABC, abstractmethod
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def extract_json_from_text(content: str) -> dict[str, Any]:
+    """Robustly extract and parse a JSON dictionary from raw LLM text output."""
+    if not content or not content.strip():
+        raise ValueError("Empty LLM response content")
+
+    text = content.strip()
+
+    # 1. Direct json.loads
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # 2. Markdown code fences (```json ... ``` or ``` ... ```)
+    fence_pattern = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+    matches = fence_pattern.findall(text)
+    for candidate in matches:
+        candidate_clean = candidate.strip()
+        try:
+            data = json.loads(candidate_clean)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, TypeError):
+            cleaned = re.sub(r",\s*([\]}])", r"\1", candidate_clean)
+            try:
+                data = json.loads(cleaned)
+                if isinstance(data, dict):
+                    return data
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    # 3. Outermost JSON object substring: from first '{' to last '}'
+    start_idx = text.find("{")
+    end_idx = text.rfind("}")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        json_str = text[start_idx : end_idx + 1].strip()
+        try:
+            data = json.loads(json_str)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, TypeError):
+            cleaned = re.sub(r",\s*([\]}])", r"\1", json_str)
+            try:
+                data = json.loads(cleaned)
+                if isinstance(data, dict):
+                    return data
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    raise ValueError(f"Could not extract valid JSON object from LLM response: {content[:200]}")
 
 
 class ExtractionResult(BaseModel):
@@ -31,8 +86,10 @@ class ExtractionResult(BaseModel):
     hsn_sac_code: str | None = None
     irn: str | None = None
     line_items: list[dict[str, Any]] = Field(default_factory=list)
-    confidence_score: float = Field(ge=0.0, le=1.0)
+    confidence_score: float = Field(default=0.85, ge=0.0, le=1.0)
     raw_response: str | None = None
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class LLMProvider(ABC):
@@ -47,6 +104,25 @@ class LLMProvider(ABC):
     def get_model_name(self) -> str:
         """Get the model name for this provider."""
         pass
+
+    def _parse_response(self, content: str) -> ExtractionResult:
+        """Parse structured ExtractionResult from raw LLM output with robust fallbacks."""
+        try:
+            data = extract_json_from_text(content)
+            # Normalize and clamp confidence_score
+            if "confidence_score" in data and data["confidence_score"] is not None:
+                try:
+                    score = float(data["confidence_score"])
+                    data["confidence_score"] = max(0.0, min(1.0, score))
+                except (ValueError, TypeError):
+                    data["confidence_score"] = 0.85
+            else:
+                data["confidence_score"] = 0.85
+
+            return ExtractionResult(**data, raw_response=content)
+        except Exception as e:
+            logger.error("Failed to parse LLM response as JSON", error=str(e), content=content)
+            raise ValueError(f"Invalid JSON response from LLM: {e}") from e
 
 
 class OpenAIProvider(LLMProvider):
@@ -93,14 +169,6 @@ class OpenAIProvider(LLMProvider):
     def get_model_name(self) -> str:
         return self.model
 
-    def _parse_response(self, content: str) -> ExtractionResult:
-        try:
-            data = json.loads(content)
-            return ExtractionResult(**data, raw_response=content)
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse OpenAI response as JSON", error=str(e), content=content)
-            raise ValueError(f"Invalid JSON response from OpenAI: {e}") from e
-
 
 class GeminiProvider(LLMProvider):
     """Google Gemini provider."""
@@ -144,14 +212,6 @@ class GeminiProvider(LLMProvider):
     def get_model_name(self) -> str:
         return self.model
 
-    def _parse_response(self, content: str) -> ExtractionResult:
-        try:
-            data = json.loads(content)
-            return ExtractionResult(**data, raw_response=content)
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse Gemini response as JSON", error=str(e), content=content)
-            raise ValueError(f"Invalid JSON response from Gemini: {e}") from e
-
 
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude provider."""
@@ -193,14 +253,6 @@ class AnthropicProvider(LLMProvider):
 
     def get_model_name(self) -> str:
         return self.model
-
-    def _parse_response(self, content: str) -> ExtractionResult:
-        try:
-            data = json.loads(content)
-            return ExtractionResult(**data, raw_response=content)
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse Anthropic response as JSON", error=str(e), content=content)
-            raise ValueError(f"Invalid JSON response from Anthropic: {e}") from e
 
 
 class LLMProviderFactory:

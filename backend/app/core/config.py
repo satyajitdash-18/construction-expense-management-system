@@ -58,6 +58,24 @@ class Settings(BaseSettings):
     WHATSAPP_ACCESS_TOKEN: str = ""
     WHATSAPP_PHONE_NUMBER_ID: str = ""
 
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = ""
+
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_FROM_NUMBER: str = ""
+
+    FCM_SERVER_KEY: str = ""
+
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_DEFAULT: int = 120
+    RATE_LIMIT_AUTH: int = 5
+    RATE_LIMIT_WEBHOOK: int = 100
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

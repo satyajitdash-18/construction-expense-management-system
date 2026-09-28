@@ -202,6 +202,7 @@ class WhatsAppService:
                 "from": from_number,
                 "text": text,
                 "timestamp": message.get("timestamp"),
+                "project_id": message.get("project_id"),
             },
         )
         self.db.add(source_event)
