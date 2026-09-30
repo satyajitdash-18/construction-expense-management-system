@@ -44,10 +44,12 @@ from app.models.role import Role, UserRole
 from app.models.source_event import SourceEvent
 from app.models.user import User
 from app.models.vendor import Vendor
+from app.models.refresh_token import RefreshToken
 
 __all__ = [
     "Base",
     "User",
+    "RefreshToken",
     "Role",
     "UserRole",
     "Vendor",

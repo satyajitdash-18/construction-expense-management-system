@@ -35,6 +35,7 @@ from app.core.database import init_db
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
 from app.core.rate_limit import RateLimitMiddleware
+from app.core.security_headers import add_security_headers_middleware
 
 setup_logging()
 
@@ -67,13 +68,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS middleware with configurable origins
+cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
+
+# Security headers middleware
+add_security_headers_middleware(
+    app,
+    csp_enabled=settings.SECURITY_HEADERS_CSP_ENABLED,
+    hsts_enabled=settings.SECURITY_HEADERS_HSTS_ENABLED,
+)
+
 app.add_middleware(RateLimitMiddleware)
 
 if settings.SENTRY_DSN:

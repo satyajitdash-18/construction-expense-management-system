@@ -6,7 +6,7 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import decode_token
+from app.core.security import decode_token, is_access_token_revoked
 from app.models.user import User
 from app.services.auth import AuthService
 
@@ -42,7 +42,26 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Check if access token has been revoked (JTI blacklist for logout)
+    jti = payload.get("jti")
+    if jti and await is_access_token_revoked(jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Check user token version (revoke-all mechanism)
     user_id = payload.get("sub")
+    token_version = payload.get("tv")
+    if user_id and token_version is not None:
+        if await is_access_token_revoked(jti, user_id, token_version):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked (session revoked)",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

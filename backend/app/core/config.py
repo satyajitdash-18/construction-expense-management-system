@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     RATE_LIMIT_WEBHOOK: int = 100
     RATE_LIMIT_WINDOW_SECONDS: int = 60
 
+    # CORS configuration
+    CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
+
+    # Security headers
+    SECURITY_HEADERS_CSP_ENABLED: bool = True
+    SECURITY_HEADERS_HSTS_ENABLED: bool = False
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

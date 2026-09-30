@@ -72,7 +72,7 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=${MINIO_BUCKET:-evidence}
       - MINIO_SECURE=false
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - JWT_ALGORITHM=HS256
       - ACCESS_TOKEN_EXPIRE_MINUTES=15
       - REFRESH_TOKEN_EXPIRE_DAYS=30
@@ -122,7 +122,7 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=${MINIO_BUCKET:-evidence}
       - MINIO_SECURE=false
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - JWT_ALGORITHM=HS256
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -139,6 +139,42 @@ services:
       - ../backend/app:/app/app
       - ../backend/alembic:/app/alembic
       - ../backend/alembic.ini:/app/alembic.ini
+    networks:
+      - app-network
+
+  beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: construction-beat
+    command: celery -A app.core.celery_app beat --loglevel=info --scheduler=celery.beat.PersistentScheduler
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-construction_expense}
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-evidence}
+      - MINIO_SECURE=false
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_ALGORITHM=HS256
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../backend/app:/app/app
+      - ../backend/alembic:/app/alembic
+      - ../backend/alembic.ini:/app/alembic.ini
+      - beat-schedule:/data
     networks:
       - app-network
 
@@ -166,6 +202,7 @@ volumes:
   postgres-data:
   redis-data:
   minio-data:
+  beat-schedule:
 
 networks:
   app-network:
