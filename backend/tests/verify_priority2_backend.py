@@ -134,6 +134,7 @@ async def test_expense_update_persistence():
     )
 
     mock_db = AsyncMock()
+    mock_db.add = MagicMock()
     service = ExpenseService(mock_db)
     service.repo.get_by_id = AsyncMock(return_value=mock_expense)
 
@@ -172,6 +173,7 @@ async def test_manual_expense_category_persistence():
     from app.services.expense import ExpenseService
 
     mock_db = AsyncMock()
+    mock_db.add = MagicMock()
     service = ExpenseService(mock_db)
     category_id = uuid4()
 
@@ -254,6 +256,7 @@ async def test_ledger_posting_audit_event_flush_order():
     from app.models.ledger import LedgerAccount
 
     mock_db = AsyncMock()
+    mock_db.add = MagicMock()
     mock_result = MagicMock()
     mock_result.scalars.return_value.first.return_value = None
     mock_db.execute.return_value = mock_result
@@ -319,6 +322,7 @@ async def test_double_entry_balancing_enforcement():
     from app.models.enums import EntryType, LifecycleStatus
 
     mock_db = AsyncMock()
+    mock_db.add = MagicMock()
     mock_result = MagicMock()
     mock_result.scalars.return_value.first.return_value = None
     mock_db.execute.return_value = mock_result
@@ -370,6 +374,7 @@ async def test_reconciliation_candidate_query():
     from app.models.enums import PaymentMethod
 
     mock_db = AsyncMock()
+    mock_db.add = MagicMock()
     service = ReconciliationService(mock_db)
 
     project_id = uuid4()

@@ -63,6 +63,7 @@ class TestRefreshTokenRotation:
     async def test_create_refresh_token_record(self):
         """Test creating a refresh token record."""
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()
         auth_service = AuthService(mock_session)
 
         user_id = uuid4()
@@ -88,6 +89,7 @@ class TestRefreshTokenRotation:
     async def test_validate_refresh_token_record_valid(self):
         """Test validating a valid refresh token record."""
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()
         auth_service = AuthService(mock_session)
 
         user_id = uuid4()
@@ -116,6 +118,7 @@ class TestRefreshTokenRotation:
     async def test_validate_refresh_token_record_revoked(self):
         """Test validating a revoked refresh token record returns None."""
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()
         auth_service = AuthService(mock_session)
 
         user_id = uuid4()
@@ -142,6 +145,7 @@ class TestRefreshTokenRotation:
     async def test_validate_refresh_token_record_expired(self):
         """Test validating an expired refresh token record returns None."""
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()
         auth_service = AuthService(mock_session)
 
         user_id = uuid4()
@@ -168,6 +172,7 @@ class TestRefreshTokenRotation:
     async def test_revoke_refresh_token_family(self):
         """Test revoking all tokens in a family."""
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()
         auth_service = AuthService(mock_session)
 
         user_id = uuid4()
@@ -200,6 +205,7 @@ class TestRefreshTokenRotation:
     async def test_revoke_all_user_refresh_tokens(self):
         """Test revoking all refresh tokens for a user."""
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()
         auth_service = AuthService(mock_session)
 
         user_id = uuid4()
@@ -230,6 +236,7 @@ class TestRefreshTokenRotation:
     async def test_rotate_refresh_token(self):
         """Test rotating a refresh token."""
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()
         auth_service = AuthService(mock_session)
 
         user_id = uuid4()
