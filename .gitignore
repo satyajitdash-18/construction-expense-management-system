@@ -69,3 +69,5 @@ Thumbs.db
 
 # Coverage / Reports
 coverage/
+# Generated frontend reports
+frontend/lint_report.json
