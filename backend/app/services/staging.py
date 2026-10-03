@@ -185,13 +185,23 @@ class StagingService:
         page: int = 1,
         page_size: int = 20,
         status_filter: str | None = None,
+        project_ids: list[UUID] | None = None,
+        project_id: UUID | None = None,
     ) -> dict[str, Any]:
-        """List staged expenses with pagination."""
+        """List staged expenses with pagination and project scoping."""
         from sqlalchemy import func, select
+
+        if project_ids is not None and len(project_ids) == 0:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
         query = select(Expense).where(Expense.lifecycle_status == LifecycleStatus.STAGED).options(
             selectinload(Expense.vendor), selectinload(Expense.project)
         )
+
+        if project_id:
+            query = query.where(Expense.project_id == project_id)
+        elif project_ids is not None:
+            query = query.where(Expense.project_id.in_(project_ids))
 
         # Get total count
         count_query = select(func.count()).select_from(query.subquery())
@@ -361,21 +371,41 @@ class StagingService:
             "message": "Changes requested, expense returned for re-extraction",
         }
 
-    async def get_staging_stats(self) -> dict[str, int]:
-        """Get staging statistics."""
+    async def get_staging_stats(
+        self,
+        project_ids: list[UUID] | None = None,
+        project_id: UUID | None = None,
+    ) -> dict[str, int]:
+        """Get staging statistics with project scoping."""
         from sqlalchemy import func, select
 
+        if project_ids is not None and len(project_ids) == 0:
+            return {
+                "pending_review": 0,
+                "approved": 0,
+                "rejected": 0,
+                "changes_requested": 0,
+                "total_staged": 0,
+            }
+
+        def _scope(q):
+            if project_id:
+                return q.where(Expense.project_id == project_id)
+            elif project_ids is not None:
+                return q.where(Expense.project_id.in_(project_ids))
+            return q
+
         pending = await self.db.execute(
-            select(func.count(Expense.id)).where(Expense.lifecycle_status == LifecycleStatus.STAGED)
+            _scope(select(func.count(Expense.id)).where(Expense.lifecycle_status == LifecycleStatus.STAGED))
         )
         approved = await self.db.execute(
-            select(func.count(Expense.id)).where(Expense.lifecycle_status == LifecycleStatus.RECONCILED)
+            _scope(select(func.count(Expense.id)).where(Expense.lifecycle_status == LifecycleStatus.RECONCILED))
         )
         rejected = await self.db.execute(
-            select(func.count(Expense.id)).where(Expense.lifecycle_status == LifecycleStatus.REJECTED)
+            _scope(select(func.count(Expense.id)).where(Expense.lifecycle_status == LifecycleStatus.REJECTED))
         )
         needs_confirmation = await self.db.execute(
-            select(func.count(Expense.id)).where(Expense.lifecycle_status == LifecycleStatus.NEEDS_CONFIRMATION)
+            _scope(select(func.count(Expense.id)).where(Expense.lifecycle_status == LifecycleStatus.NEEDS_CONFIRMATION))
         )
 
         return {

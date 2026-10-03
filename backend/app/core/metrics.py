@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from prometheus_client import Counter, Histogram, Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from sqlalchemy import text
 
 # Create custom registry
 registry = CollectorRegistry()
@@ -324,7 +325,7 @@ async def check_database_health(db_session) -> dict:
     """Check database connectivity."""
     start = time.perf_counter()
     try:
-        await db_session.execute("SELECT 1")
+        await db_session.execute(text("SELECT 1"))
         duration = time.perf_counter() - start
         health_check_duration_seconds.labels(service="database").observe(duration)
         service_health_status.labels(service="database").set(1)

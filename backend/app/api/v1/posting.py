@@ -7,8 +7,16 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import (
+    get_user_accessible_project_ids,
+    verify_project_access,
+)
 from app.core.database import get_db as get_db_dep
-from app.core.dependencies import get_current_user as get_current_user_dep
+from app.core.dependencies import (
+    get_current_user as get_current_user_dep,
+    require_finance_user,
+)
+from app.models.expense import Expense
 from app.models.user import User
 from app.schemas.posting import (
     AccountBalanceListResponse,
@@ -18,6 +26,8 @@ from app.schemas.posting import (
     PostingListResponse,
     PostingRequest,
     PostingResponse,
+    ReversalRequest,
+    ReversalResponse,
     TrialBalanceResponse,
 )
 from app.services.posting import create_posting_service
@@ -28,10 +38,21 @@ router = APIRouter(prefix="/posting", tags=["posting"])
 @router.post("/post", response_model=PostingResponse, status_code=status.HTTP_202_ACCEPTED)
 async def post_expense(
     request: PostingRequest,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_finance_user),
     db: AsyncSession = Depends(get_db_dep),
 ) -> PostingResponse:
     """Post a reconciled expense to the ledger."""
+    expense = await db.get(Expense, request.expense_id)
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    await verify_project_access(
+        db,
+        current_user,
+        expense.project_id,
+        ["admin", "finance_user", "project_manager"],
+    )
+
     posting_service = create_posting_service(db)
 
     try:
@@ -59,10 +80,62 @@ async def post_expense(
                 posted_at=e["posted_at"],
                 source_audit_event_id=e.get("source_audit_event_id"),
                 description=None,
+                is_reversal=False,
             )
             for e in result["ledger_entries"]
         ],
         message=result.get("message", "Expense posted successfully"),
+    )
+
+
+@router.post("/reverse", response_model=ReversalResponse, status_code=status.HTTP_200_OK)
+async def reverse_posting(
+    request: ReversalRequest,
+    current_user: User = Depends(require_finance_user),
+    db: AsyncSession = Depends(get_db_dep),
+) -> ReversalResponse:
+    """Reverse a posted expense by creating compensating reversing ledger entries."""
+    expense = await db.get(Expense, request.expense_id)
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    await verify_project_access(
+        db,
+        current_user,
+        expense.project_id,
+        ["admin", "finance_user"],
+    )
+
+    posting_service = create_posting_service(db)
+    try:
+        result = await posting_service.reverse_posting(
+            expense_id=request.expense_id,
+            actor_id=current_user.id,
+            reason=request.reason,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return ReversalResponse(
+        expense_id=result["expense_id"],
+        status=result["status"],
+        message=result.get("message", "Expense posting reversed successfully"),
+        ledger_entries=[
+            LedgerEntryResponse(
+                id=e["id"],
+                ledger_account_id=e["ledger_account_id"],
+                ledger_account_name=None,
+                ledger_account_type=None,
+                expense_id=result["expense_id"],
+                amount=Decimal(str(e["amount"])),
+                entry_type=e["entry_type"],
+                posted_at=e["posted_at"],
+                source_audit_event_id=None,
+                description=None,
+                is_reversal=True,
+            )
+            for e in result["ledger_entries"]
+        ],
     )
 
 
@@ -73,6 +146,12 @@ async def get_posting(
     db: AsyncSession = Depends(get_db_dep),
 ) -> PostingDetailResponse:
     """Get posting details for an expense."""
+    expense = await db.get(Expense, expense_id)
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    await verify_project_access(db, current_user, expense.project_id)
+
     posting_service = create_posting_service(db)
     posting = await posting_service.get_expense_posting(expense_id)
 
@@ -90,12 +169,19 @@ async def list_postings(
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> PostingListResponse:
-    """List all postings with pagination."""
+    """List all postings with pagination and project scoping."""
+    accessible_ids = await get_user_accessible_project_ids(db, current_user)
+    if project_id:
+        if accessible_ids is not None and project_id not in accessible_ids:
+            return PostingListResponse(items=[], total=0, page=page, page_size=page_size)
+        accessible_ids = [project_id]
+
     posting_service = create_posting_service(db)
     result = await posting_service.list_postings(
         page=page,
         page_size=page_size,
         project_id=project_id,
+        project_ids=accessible_ids,
     )
 
     return PostingListResponse(
@@ -114,12 +200,19 @@ async def get_account_balances(
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> AccountBalanceListResponse:
-    """Get current account balances."""
+    """Get current account balances with project scoping."""
+    accessible_ids = await get_user_accessible_project_ids(db, current_user)
+    if project_id:
+        if accessible_ids is not None and project_id not in accessible_ids:
+            return AccountBalanceListResponse(items=[], total=0, page=page, page_size=page_size)
+        accessible_ids = [project_id]
+
     posting_service = create_posting_service(db)
     result = await posting_service.get_account_balances(
         page=page,
         page_size=page_size,
         project_id=project_id,
+        project_ids=accessible_ids,
     )
 
     return AccountBalanceListResponse(
@@ -137,8 +230,15 @@ async def get_trial_balance(
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> TrialBalanceResponse:
-    """Generate trial balance for a project."""
-    from datetime import datetime
+    """Generate trial balance for a project with authorization."""
+    accessible_ids = await get_user_accessible_project_ids(db, current_user)
+    if accessible_ids is not None and project_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="project_id is required for trial balance",
+        )
+    if project_id:
+        await verify_project_access(db, current_user, project_id)
 
     posting_service = create_posting_service(db)
     if as_of_date is None:

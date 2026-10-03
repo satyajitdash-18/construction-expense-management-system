@@ -17,7 +17,7 @@ import { useToast } from '@/hooks/use-toast';
 const projectSchema = z.object({
   name: z.string().min(1, 'Project name is required'),
   code: z.string().min(2, 'Project code must be at least 2 characters'),
-  status: z.enum(['active', 'on_hold', 'completed', 'archived']).default('active'),
+  status: z.enum(['active', 'on_hold', 'completed', 'archived']),
 });
 
 type ProjectFormData = z.infer<typeof projectSchema>;
@@ -27,8 +27,8 @@ export default function ProjectCreate() {
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
 
-  const form = useForm<any>({
-    resolver: zodResolver(projectSchema) as any,
+  const form = useForm<ProjectFormData>({
+    resolver: zodResolver(projectSchema),
     defaultValues: {
       name: '',
       code: '',
@@ -42,11 +42,11 @@ export default function ProjectCreate() {
       const project = await api.createProject({
         name: data.name,
         code: data.code,
-      } as any);
+      });
       toast({ title: 'Project created', description: `${data.name} has been created` });
       navigate(`/projects/${project.id}`);
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to create project', variant: 'destructive' });
+    } catch (error: unknown) {
+      toast({ title: 'Error', description: (error as Error).message || 'Failed to create project', variant: 'destructive' });
     } finally {
       setLoading(false);
     }

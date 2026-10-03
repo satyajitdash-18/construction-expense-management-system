@@ -161,11 +161,15 @@ async def _process_llm_extraction_async(
                         pass
                 if extraction_result.vendor_gstin:
                     expense.gstin_supplier = extraction_result.vendor_gstin
-                if extraction_result.confidence_score is not None:
-                    expense.confidence_score = Decimal(str(round(extraction_result.confidence_score, 2)))
-                expense.lifecycle_status = (
-                    LifecycleStatus.STAGED if (extraction_result.confidence_score or 0) >= 0.7 else LifecycleStatus.NEEDS_CONFIRMATION
-                )
+                is_valid, reason = extraction_result.validate_financial_invariants()
+                if not is_valid:
+                    logger.warning("Extraction financial invariants failed", reason=reason, job_id=str(job.id))
+                    expense.confidence_score = min(expense.confidence_score or Decimal("0.85"), Decimal("0.50"))
+                    expense.lifecycle_status = LifecycleStatus.NEEDS_CONFIRMATION
+                else:
+                    expense.lifecycle_status = (
+                        LifecycleStatus.STAGED if (extraction_result.confidence_score or 0) >= 0.7 else LifecycleStatus.NEEDS_CONFIRMATION
+                    )
                 await db.flush()
 
                 await write_audit_event(
@@ -221,6 +225,17 @@ async def _process_llm_extraction_async(
                             await db.flush()
                         vendor_id = vendor.id
 
+                    is_valid, reason = extraction_result.validate_financial_invariants()
+                    conf_score = Decimal(str(round(extraction_result.confidence_score, 2))) if extraction_result.confidence_score is not None else Decimal("0.85")
+                    if not is_valid:
+                        logger.warning("Extraction financial invariants failed on text expense", reason=reason, job_id=str(job.id))
+                        conf_score = min(conf_score, Decimal("0.50"))
+                        initial_status = LifecycleStatus.NEEDS_CONFIRMATION
+                    else:
+                        initial_status = (
+                            LifecycleStatus.STAGED if (extraction_result.confidence_score or 0) >= 0.7 else LifecycleStatus.NEEDS_CONFIRMATION
+                        )
+
                     expense = Expense(
                         project_id=target_project.id,
                         source_event_id=job.source_event_id,
@@ -241,10 +256,8 @@ async def _process_llm_extraction_async(
                         sgst_amount=Decimal(str(extraction_result.sgst_amount)) if extraction_result.sgst_amount is not None else None,
                         igst_amount=Decimal(str(extraction_result.igst_amount)) if extraction_result.igst_amount is not None else None,
                         irn=extraction_result.irn,
-                        confidence_score=Decimal(str(round(extraction_result.confidence_score, 2))) if extraction_result.confidence_score is not None else Decimal("0.85"),
-                        lifecycle_status=(
-                            LifecycleStatus.STAGED if (extraction_result.confidence_score or 0) >= 0.7 else LifecycleStatus.NEEDS_CONFIRMATION
-                        ),
+                        confidence_score=conf_score,
+                        lifecycle_status=initial_status,
                     )
                     db.add(expense)
                     await db.flush()

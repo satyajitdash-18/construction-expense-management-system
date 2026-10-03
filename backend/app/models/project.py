@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.models.expense import Expense
     from app.models.ledger_account import LedgerAccount
     from app.models.project_budget import ProjectBudget
+    from app.models.project_member import ProjectMember
     from app.models.user import User
 
 
@@ -48,6 +49,9 @@ class Project(Base):
     )
     expenses: Mapped[list["Expense"]] = relationship(back_populates="project", lazy="dynamic")
     ledger_accounts: Mapped[list["LedgerAccount"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", lazy="selectin"
+    )
+    members: Mapped[list["ProjectMember"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", lazy="selectin"
     )
 

@@ -46,6 +46,22 @@ class ProcessingJob(Base):
 
     __table_args__ = ()
 
+    @property
+    def error_message(self) -> str | None:
+        try:
+            attempts = getattr(self, "attempts", None)
+            if attempts:
+                return attempts[-1].error_message
+        except Exception:
+            pass
+        return None
+
+    @property
+    def completed_at(self) -> datetime | None:
+        if self.status in (JobStatus.SUCCEEDED, JobStatus.FAILED):
+            return self.updated_at
+        return None
+
     def __repr__(self) -> str:
         return f"<ProcessingJob(id={self.id}, type={self.job_type}, status={self.status})>"
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -11,6 +11,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { Input } from '@/components/ui/Input';
 import { format } from 'date-fns';
 import { api } from '@/services/api';
+import type { Project, ProjectBudget } from '@/types/api';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { useForm } from 'react-hook-form';
@@ -20,32 +21,44 @@ import { z } from 'zod';
 const budgetSchema = z.object({
   category_id: z.string().optional(),
   amount: z.coerce.number().min(0.01, 'Amount must be greater than 0'),
-  currency: z.string().default('INR'),
+  currency: z.string(),
   effective_from: z.string().min(1, 'Effective from date is required'),
   effective_to: z.string().optional(),
 });
 
 type BudgetFormData = z.infer<typeof budgetSchema>;
 
+interface BudgetEntry extends ProjectBudget {
+  budget?: number;
+  actual?: number;
+  variance?: number;
+}
+
 export default function ProjectDetail() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [project, setProject] = useState<any>(null);
-  const [budgetVsActual, setBudgetVsActual] = useState<any>(null);
+  const [project, setProject] = useState<Project | null>(null);
+  const [budgetVsActual, setBudgetVsActual] = useState<BudgetEntry[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'details' | 'budget' | 'expenses'>('details');
-  const [editingBudget, setEditingBudget] = useState<any | null>(null);
+  const [editingBudget, setEditingBudget] = useState<BudgetEntry | null>(null);
   const [budgetDialogOpen, setBudgetDialogOpen] = useState(false);
 
-  const form = useForm<any>({
-    resolver: zodResolver(budgetSchema) as any,
-    defaultValues: { currency: 'INR' },
+  const form = useForm<BudgetFormData>({
+    resolver: zodResolver(budgetSchema),
+    defaultValues: {
+      amount: 0,
+      currency: 'INR',
+      effective_from: '',
+      category_id: '',
+      effective_to: '',
+    },
   });
   const { reset } = form;
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
     setError(null);
@@ -55,44 +68,54 @@ export default function ProjectDetail() {
         api.getProjectBudgets(projectId),
       ]);
       setProject(projectRes);
-      setBudgetVsActual(budgetRes);
+      setBudgetVsActual(budgetRes as BudgetEntry[]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch project data');
     } finally {
       setLoading(false);
     }
-  };
+  }, [projectId]);
 
   useEffect(() => {
     fetchData();
-  }, [projectId]);
+  }, [fetchData]);
 
   const onBudgetSubmit = async (data: BudgetFormData) => {
+    if (!project) return;
     try {
       if (editingBudget) {
         await api.updateProjectBudget(project.id, editingBudget.id, data);
         toast({ title: 'Budget updated', description: 'Budget has been updated successfully' });
       } else {
-        await api.createProjectBudget(project.id, data as any);
+        await api.createProjectBudget(project.id, {
+          category_id: data.category_id || '',
+          amount: data.amount,
+          currency: data.currency || 'INR',
+          effective_from: data.effective_from,
+          effective_to: data.effective_to || null,
+        });
         toast({ title: 'Budget created', description: 'Budget has been created successfully' });
       }
       setBudgetDialogOpen(false);
       setEditingBudget(null);
       reset();
       fetchData();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to save budget', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save budget';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
   const handleDeleteBudget = async (budgetId: string) => {
+    if (!project) return;
     if (!confirm('Are you sure you want to delete this budget?')) return;
     try {
       await api.deleteProjectBudget(project.id, budgetId);
       toast({ title: 'Budget deleted', description: 'Budget has been deleted successfully' });
       fetchData();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to delete budget', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete budget';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
@@ -207,7 +230,7 @@ export default function ProjectDetail() {
         <div className="space-y-6">
           {budgetVsActual && Array.isArray(budgetVsActual) && budgetVsActual.length > 0 && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {budgetVsActual.slice(0, 3).map((item: any, i: number) => (
+              {budgetVsActual.slice(0, 3).map((item: BudgetEntry, i: number) => (
                 <Card key={i}>
                   <CardHeader>
                     <CardTitle>{item.category_id || 'Overall'}</CardTitle>
@@ -354,7 +377,7 @@ export default function ProjectDetail() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {budgetVsActual.map((item: any, index: number) => (
+                    {budgetVsActual.map((item: BudgetEntry, index: number) => (
                       <TableRow key={index}>
                         <TableCell className="font-medium">
                           {item.category_id ? `Category: ${item.category_id}` : 'Overall Project'}

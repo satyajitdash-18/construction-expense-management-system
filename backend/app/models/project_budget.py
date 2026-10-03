@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, func
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,6 +45,7 @@ class ProjectBudget(Base):
     __table_args__ = (
         Index("ix_project_budgets_project_effective", "project_id", "effective_from"),
         Index("ix_project_budgets_category_effective", "category_id", "effective_from"),
+        CheckConstraint("amount >= 0", name="chk_budget_amount_positive"),
     )
 
     def __repr__(self) -> str:

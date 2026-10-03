@@ -7,6 +7,11 @@ import structlog
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+
 def get_correlation_id() -> str:
     return str(uuid.uuid4())
 
@@ -20,6 +25,22 @@ def set_correlation_id(correlation_id: str | None = None) -> str:
 
 def clear_correlation_id() -> None:
     clear_contextvars()
+
+
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        corr_id = (
+            request.headers.get("X-Correlation-ID")
+            or request.headers.get("X-Request-ID")
+            or get_correlation_id()
+        )
+        set_correlation_id(corr_id)
+        try:
+            response = await call_next(request)
+            response.headers["X-Correlation-ID"] = corr_id
+            return response
+        finally:
+            clear_correlation_id()
 
 
 def setup_logging() -> None:

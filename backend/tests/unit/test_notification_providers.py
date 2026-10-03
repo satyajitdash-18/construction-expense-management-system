@@ -156,6 +156,7 @@ async def test_whatsapp_provider_missing_recipient(db_session: AsyncSession):
     assert "Recipient phone number not specified" in (notif.error_message or "")
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_update_notification_preference_distinguishes_event_type(
     db_session: AsyncSession,
@@ -201,6 +202,7 @@ async def test_update_notification_preference_distinguishes_event_type(
     assert pref1_updated.enabled is False
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_process_scheduled_notifications_counts_only_successes(
     db_session: AsyncSession,

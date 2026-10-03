@@ -2,6 +2,7 @@
 
 from celery import Celery
 from celery.schedules import crontab
+from kombu import Queue
 
 from app.core.config import settings
 from app.core.celery_beat_schedule import CELERY_BEAT_SCHEDULE, CELERY_TASK_ROUTES
@@ -44,8 +45,14 @@ celery_app.conf.update(
     beat_schedule_filename="/data/celerybeat-schedule",
     beat_max_loop_interval=300,
     
-    # Task routing
+    # Task routing and queues
     task_routes=CELERY_TASK_ROUTES,
+    task_queues=[
+        Queue("default"),
+        Queue("ocr"),
+        Queue("extraction"),
+        Queue("maintenance"),
+    ],
     
     # Default queue settings
     task_default_queue="default",
@@ -53,3 +60,25 @@ celery_app.conf.update(
     task_default_exchange_type="direct",
     task_default_routing_key="default",
 )
+
+from celery.signals import task_postrun, worker_process_init
+
+
+@worker_process_init.connect
+def on_worker_process_init(**kwargs: object) -> None:
+    """Ensure child worker process does not inherit parent event loop connections."""
+    try:
+        from app.core.database import engine
+        engine.sync_engine.dispose()
+    except Exception:
+        pass
+
+
+@task_postrun.connect
+def on_task_postrun(**kwargs: object) -> None:
+    """Dispose connection pool between tasks so new asyncio.run loops get clean connections."""
+    try:
+        from app.core.database import engine
+        engine.sync_engine.dispose()
+    except Exception:
+        pass

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -23,9 +24,9 @@ class ExpenseService:
         project_id: UUID,
         created_by: UUID,
         transaction_date: str,
-        subtotal: float,
-        tax_amount: float,
-        total: float,
+        subtotal: Decimal | float,
+        tax_amount: Decimal | float,
+        total: Decimal | float,
         currency: str = "INR",
         payment_method: str = "CASH",
         vendor_id: UUID | None = None,
@@ -34,9 +35,9 @@ class ExpenseService:
         vendor_name: str | None = None,
         gstin_supplier: str | None = None,
         hsn_sac_code: str | None = None,
-        cgst_amount: float | None = None,
-        sgst_amount: float | None = None,
-        igst_amount: float | None = None,
+        cgst_amount: Decimal | float | None = None,
+        sgst_amount: Decimal | float | None = None,
+        igst_amount: Decimal | float | None = None,
         irn: str | None = None,
     ) -> "Expense":
         from datetime import date
@@ -86,22 +87,29 @@ class ExpenseService:
             payload={"source": "manual", "idempotency_key": source_event.idempotency_key},
         )
 
+        subtotal_dec = Decimal(str(subtotal))
+        tax_amount_dec = Decimal(str(tax_amount))
+        total_dec = Decimal(str(total))
+        cgst_dec = Decimal(str(cgst_amount)) if cgst_amount is not None else None
+        sgst_dec = Decimal(str(sgst_amount)) if sgst_amount is not None else None
+        igst_dec = Decimal(str(igst_amount)) if igst_amount is not None else None
+
         expense = Expense(
             project_id=project_id,
             source_event_id=source_event.id,
             vendor_id=vendor_id,
             category_id=category_id,
             transaction_date=transaction_date_obj,
-            subtotal=subtotal,
-            tax_amount=tax_amount,
-            total=total,
+            subtotal=subtotal_dec,
+            tax_amount=tax_amount_dec,
+            total=total_dec,
             currency=currency,
             payment_method=PaymentMethod(payment_method),
             gstin_supplier=gstin_supplier,
             hsn_sac_code=hsn_sac_code,
-            cgst_amount=cgst_amount,
-            sgst_amount=sgst_amount,
-            igst_amount=igst_amount,
+            cgst_amount=cgst_dec,
+            sgst_amount=sgst_dec,
+            igst_amount=igst_dec,
             irn=irn,
             lifecycle_status=LifecycleStatus.RECEIVED,
             source_audit_event_id=source_audit_event_id,
@@ -149,6 +157,7 @@ class ExpenseService:
     async def list_expenses(
         self,
         project_id: UUID | None = None,
+        project_ids: list[UUID] | None = None,
         vendor_id: UUID | None = None,
         category_id: UUID | None = None,
         status: str | None = None,
@@ -159,6 +168,7 @@ class ExpenseService:
     ) -> list["Expense"]:
         return await self.repo.list(
             project_id=project_id,
+            project_ids=project_ids,
             vendor_id=vendor_id,
             category_id=category_id,
             status=status,
@@ -171,12 +181,14 @@ class ExpenseService:
     async def count(
         self,
         project_id: UUID | None = None,
+        project_ids: list[UUID] | None = None,
         vendor_id: UUID | None = None,
         category_id: UUID | None = None,
         status: str | None = None,
     ) -> int:
         return await self.repo.count(
             project_id=project_id,
+            project_ids=project_ids,
             vendor_id=vendor_id,
             category_id=category_id,
             status=status,
@@ -222,6 +234,51 @@ class ExpenseService:
             "igst_amount",
             "irn",
         }
+
+        # Construct proposed composite state and validate financial invariants
+        from decimal import Decimal
+
+        proposed_subtotal = Decimal(str(update_data.get("subtotal", expense.subtotal)))
+        proposed_tax = Decimal(str(update_data.get("tax_amount", expense.tax_amount)))
+        proposed_total = Decimal(str(update_data.get("total", expense.total)))
+
+        if proposed_subtotal < Decimal("0"):
+            raise ValueError("subtotal must be non-negative")
+        if proposed_tax < Decimal("0"):
+            raise ValueError("tax_amount must be non-negative")
+        if proposed_total < Decimal("0"):
+            raise ValueError("total must be non-negative")
+
+        if proposed_subtotal + proposed_tax != proposed_total:
+            raise ValueError(
+                f"Financial invariant violated: subtotal ({proposed_subtotal}) + tax_amount ({proposed_tax}) "
+                f"must equal total ({proposed_total})"
+            )
+
+        raw_cgst = update_data.get("cgst_amount", expense.cgst_amount)
+        raw_sgst = update_data.get("sgst_amount", expense.sgst_amount)
+        raw_igst = update_data.get("igst_amount", expense.igst_amount)
+
+        proposed_cgst = Decimal(str(raw_cgst)) if raw_cgst is not None else None
+        proposed_sgst = Decimal(str(raw_sgst)) if raw_sgst is not None else None
+        proposed_igst = Decimal(str(raw_igst)) if raw_igst is not None else None
+
+        if proposed_cgst is not None and proposed_cgst < Decimal("0"):
+            raise ValueError("cgst_amount must be non-negative")
+        if proposed_sgst is not None and proposed_sgst < Decimal("0"):
+            raise ValueError("sgst_amount must be non-negative")
+        if proposed_igst is not None and proposed_igst < Decimal("0"):
+            raise ValueError("igst_amount must be non-negative")
+
+        if proposed_tax > Decimal("0") and (proposed_cgst or proposed_sgst or proposed_igst):
+            if proposed_igst and proposed_igst > Decimal("0"):
+                if proposed_igst != proposed_tax:
+                    raise ValueError(f"igst_amount ({proposed_igst}) must equal tax_amount ({proposed_tax})")
+            elif (proposed_cgst and proposed_cgst > Decimal("0")) or (proposed_sgst and proposed_sgst > Decimal("0")):
+                c = proposed_cgst or Decimal("0")
+                s = proposed_sgst or Decimal("0")
+                if c + s != proposed_tax:
+                    raise ValueError(f"cgst_amount ({c}) + sgst_amount ({s}) must equal tax_amount ({proposed_tax})")
 
         updated_fields = {}
         for key, value in update_data.items():

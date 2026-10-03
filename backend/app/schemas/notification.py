@@ -43,7 +43,7 @@ class NotificationResponse(BaseModel):
     sent_at: datetime | None = None
     created_at: datetime
     metadata: dict[str, Any] | None = Field(
-        default=None, validation_alias=AliasChoices("metadata", "notification_metadata")
+        default=None, validation_alias="notification_metadata"
     )
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)

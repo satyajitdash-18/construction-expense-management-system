@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Numeric, String, func
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Index, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -98,6 +98,12 @@ class Expense(Base):
     __table_args__ = (
         Index("ix_expenses_project_status_date", "project_id", "lifecycle_status", "transaction_date"),
         Index("ix_expenses_vendor_date", "vendor_id", "transaction_date"),
+        CheckConstraint("subtotal >= 0", name="chk_expense_subtotal_non_negative"),
+        CheckConstraint("tax_amount >= 0", name="chk_expense_tax_non_negative"),
+        CheckConstraint("total >= 0", name="chk_expense_total_non_negative"),
+        CheckConstraint("cgst_amount IS NULL OR cgst_amount >= 0", name="chk_expense_cgst_non_negative"),
+        CheckConstraint("sgst_amount IS NULL OR sgst_amount >= 0", name="chk_expense_sgst_non_negative"),
+        CheckConstraint("igst_amount IS NULL OR igst_amount >= 0", name="chk_expense_igst_non_negative"),
     )
 
     def __repr__(self) -> str:

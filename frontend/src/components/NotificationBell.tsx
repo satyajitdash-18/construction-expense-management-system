@@ -1,43 +1,35 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Bell } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { useAuth } from '@/store/authStore';
 import { api } from '@/services/api';
-
-interface Notification {
-  id: string;
-  title: string;
-  body: string;
-  read: boolean;
-  created_at: string;
-  channel: string;
-  metadata?: Record<string, any>;
-}
+import type { NotificationItem } from '@/types/api';
 
 export function NotificationBell() {
   const { user } = useAuth();
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  const fetchNotifications = async () => {
+  const fetchNotifications = useCallback(async () => {
     if (!user) return;
     try {
       const result = await api.getNotifications({ page: 1, page_size: 20 });
       if (result && Array.isArray(result.items)) {
-        setNotifications(result.items);
-        setUnreadCount(result.items.filter((n: any) => !n.read).length);
+        const items = result.items;
+        setNotifications(items);
+        setUnreadCount(items.filter((n) => !n.read && !n.is_read).length);
       }
     } catch (error) {
       console.error('Failed to fetch notifications:', error);
     }
-  };
+  }, [user]);
 
   useEffect(() => {
     if (user) {
       fetchNotifications();
     }
-  }, [user]);
+  }, [user, fetchNotifications]);
 
   const markAllAsRead = async () => {
     try {

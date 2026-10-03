@@ -100,8 +100,8 @@ export default function SettingsPage() {
       const updated = await api.updateProfile(data);
       updateUser({ ...user, ...updated });
       toast({ title: 'Profile updated', description: 'Your profile has been updated successfully' });
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to update profile', variant: 'destructive' });
+    } catch (error: unknown) {
+      toast({ title: 'Error', description: (error as Error).message || 'Failed to update profile', variant: 'destructive' });
     } finally {
       setSaving(null);
     }
@@ -113,8 +113,8 @@ export default function SettingsPage() {
       await api.changePassword(data.current_password, data.new_password);
       toast({ title: 'Password updated', description: 'Your password has been changed successfully' });
       resetPassword();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to change password', variant: 'destructive' });
+    } catch (error: unknown) {
+      toast({ title: 'Error', description: (error as Error).message || 'Failed to change password', variant: 'destructive' });
     } finally {
       setSaving(null);
     }
@@ -125,8 +125,8 @@ export default function SettingsPage() {
     try {
       await api.updateNotificationPreferences(data as Record<string, boolean>);
       toast({ title: 'Preferences updated', description: 'Notification preferences have been saved' });
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to update preferences', variant: 'destructive' });
+    } catch (error: unknown) {
+      toast({ title: 'Error', description: (error as Error).message || 'Failed to update preferences', variant: 'destructive' });
     } finally {
       setSaving(null);
     }
@@ -157,8 +157,8 @@ export default function SettingsPage() {
     try {
       await api.deleteAccount();
       window.location.href = '/login';
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to delete account', variant: 'destructive' });
+    } catch (error: unknown) {
+      toast({ title: 'Error', description: (error as Error).message || 'Failed to delete account', variant: 'destructive' });
     } finally {
       setLoading(false);
     }

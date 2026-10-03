@@ -4,6 +4,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import (
+    get_user_accessible_project_ids,
+    verify_project_access,
+)
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_project_manager
 from app.schemas.project import (
@@ -11,6 +15,8 @@ from app.schemas.project import (
     BudgetVsActualResponse,
     ProjectCreate,
     ProjectListResponse,
+    ProjectMemberCreate,
+    ProjectMemberResponse,
     ProjectResponse,
     ProjectUpdate,
 )
@@ -36,6 +42,7 @@ async def create_project(
             created_by=current_user.id,
             status=request.status,
         )
+        await db.commit()
         return ProjectResponse.model_validate(project)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from None
@@ -50,8 +57,17 @@ async def list_projects(
     current_user: "User" = Depends(get_current_user),
 ) -> ProjectListResponse:
     service = ProjectService(db)
-    projects = await service.list_projects(status_filter=status, limit=limit, offset=offset)
-    total = await service.get_project_count(status_filter=None)
+    accessible_ids = await get_user_accessible_project_ids(db, current_user)
+    projects = await service.list_projects(
+        status_filter=status,
+        project_ids=accessible_ids,
+        limit=limit,
+        offset=offset,
+    )
+    total = await service.get_project_count(
+        status_filter=status,
+        project_ids=accessible_ids,
+    )
 
     return ProjectListResponse(
         items=[ProjectResponse.model_validate(p) for p in projects],
@@ -67,6 +83,7 @@ async def get_project(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(get_current_user),
 ) -> ProjectResponse:
+    await verify_project_access(db, current_user, project_id)
     service = ProjectService(db)
     project = await service.get_project(project_id)
     if not project:
@@ -81,6 +98,7 @@ async def update_project(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(require_project_manager),
 ) -> ProjectResponse:
+    await verify_project_access(db, current_user, project_id, ["admin", "project_manager"])
     service = ProjectService(db)
     project = await service.update_project(
         project_id=project_id,
@@ -89,6 +107,7 @@ async def update_project(
     )
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    await db.commit()
     return ProjectResponse.model_validate(project)
 
 
@@ -98,10 +117,12 @@ async def delete_project(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(require_project_manager),
 ) -> None:
+    await verify_project_access(db, current_user, project_id, ["admin", "project_manager"])
     service = ProjectService(db)
     deleted = await service.delete_project(project_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    await db.commit()
 
 
 @router.get("/{project_id}/budget", response_model=dict)
@@ -111,13 +132,9 @@ async def get_budget_vs_actual(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(get_current_user),
 ) -> dict:
+    await verify_project_access(db, current_user, project_id)
     service = ProjectService(db)
-    project = await service.get_project(project_id)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
     data = await service.get_budget_vs_actual(project_id)
-    # Return both naming conventions so different callers work
     return {
         **data,
         "budget": data.get("total_budget", 0),
@@ -134,11 +151,8 @@ async def set_budget(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(require_project_manager),
 ) -> dict:
+    await verify_project_access(db, current_user, project_id, ["admin", "project_manager"])
     service = ProjectService(db)
-    project = await service.get_project(project_id)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
     budget = await service.set_budget(
         project_id=project_id,
         amount=request.amount,
@@ -147,6 +161,7 @@ async def set_budget(
         effective_from=request.effective_from,
         effective_to=request.effective_to,
     )
+    await db.commit()
     return {
         "id": str(budget.id),
         "project_id": str(project_id),
@@ -156,18 +171,14 @@ async def set_budget(
     }
 
 
-
 @router.get("/{project_id}/budgets")
 async def get_budgets(
     project_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(get_current_user),
 ) -> list[dict]:
+    await verify_project_access(db, current_user, project_id)
     service = ProjectService(db)
-    project = await service.get_project(project_id)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
     budgets = await service.get_budgets(project_id)
     return [
         {
@@ -180,3 +191,59 @@ async def get_budgets(
         }
         for b in budgets
     ]
+
+
+@router.get("/{project_id}/members", response_model=list[dict])
+async def list_project_members(
+    project_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: "User" = Depends(get_current_user),
+) -> list[dict]:
+    await verify_project_access(db, current_user, project_id)
+    service = ProjectService(db)
+    members = await service.list_members(project_id)
+    return [
+        {
+            "id": str(m.id),
+            "project_id": str(m.project_id),
+            "user_id": str(m.user_id),
+            "role": m.role,
+            "created_at": m.created_at.isoformat(),
+        }
+        for m in members
+    ]
+
+
+@router.post("/{project_id}/members", status_code=status.HTTP_201_CREATED)
+async def add_project_member(
+    project_id: UUID,
+    request: ProjectMemberCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: "User" = Depends(require_project_manager),
+) -> dict:
+    await verify_project_access(db, current_user, project_id, ["admin", "project_manager"])
+    service = ProjectService(db)
+    member = await service.add_member(project_id, request.user_id, request.role)
+    await db.commit()
+    return {
+        "id": str(member.id),
+        "project_id": str(member.project_id),
+        "user_id": str(member.user_id),
+        "role": member.role,
+        "message": "Member added successfully",
+    }
+
+
+@router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_project_member(
+    project_id: UUID,
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: "User" = Depends(require_project_manager),
+) -> None:
+    await verify_project_access(db, current_user, project_id, ["admin", "project_manager"])
+    service = ProjectService(db)
+    removed = await service.remove_member(project_id, user_id)
+    if not removed:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found on this project")
+    await db.commit()

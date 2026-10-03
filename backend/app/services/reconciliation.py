@@ -85,9 +85,13 @@ class ReconciliationService:
         if date_to:
             query = query.where(PaymentEvent.occurred_at <= datetime.fromisoformat(date_to))
 
-        # Exclude already matched payments
+        # Exclude already matched payments (only active MATCHED or MANUALLY_RESOLVED records)
         subquery = select(ReconciliationRecord.payment_event_id).where(
-            ReconciliationRecord.payment_event_id.is_not(None)
+            ReconciliationRecord.payment_event_id.is_not(None),
+            ReconciliationRecord.status.in_([
+                ReconciliationStatus.MATCHED,
+                ReconciliationStatus.MANUALLY_RESOLVED,
+            ]),
         )
         query = query.where(PaymentEvent.id.not_in(subquery))
 
@@ -268,7 +272,10 @@ class ReconciliationService:
         If payment_event_id is provided, manually match to that payment.
         If auto_match is True, find the best candidate automatically.
         """
-        expense = await self.db.get(Expense, expense_id)
+        # Acquire row lock on expense
+        stmt = select(Expense).where(Expense.id == expense_id).with_for_update()
+        result = await self.db.execute(stmt)
+        expense = result.scalar_one_or_none()
         if not expense:
             raise ValueError(f"Expense {expense_id} not found")
 
@@ -277,6 +284,10 @@ class ReconciliationService:
             select(ReconciliationRecord).where(
                 ReconciliationRecord.expense_id == expense_id,
                 ReconciliationRecord.payment_event_id.is_not(None),
+                ReconciliationRecord.status.in_([
+                    ReconciliationStatus.MATCHED,
+                    ReconciliationStatus.MANUALLY_RESOLVED,
+                ]),
             )
         )
         existing_record = existing.scalars().first()
@@ -288,23 +299,51 @@ class ReconciliationService:
         match_score = Decimal("1.0")
 
         if payment_event_id:
-            # Manual match
-            payment_event = await self.db.get(PaymentEvent, payment_event_id)
+            # Manual match: lock payment event and check active matches
+            stmt_pe = select(PaymentEvent).where(PaymentEvent.id == payment_event_id).with_for_update()
+            pe_res = await self.db.execute(stmt_pe)
+            payment_event = pe_res.scalar_one_or_none()
             if not payment_event:
                 raise ValueError(f"Payment event {payment_event_id} not found")
+
+            # Validate payment event is not already actively matched elsewhere
+            already_matched = await self.db.execute(
+                select(ReconciliationRecord).where(
+                    ReconciliationRecord.payment_event_id == payment_event_id,
+                    ReconciliationRecord.status.in_([
+                        ReconciliationStatus.MATCHED,
+                        ReconciliationStatus.MANUALLY_RESOLVED,
+                    ]),
+                )
+            )
+            if already_matched.scalars().first():
+                raise ValueError(f"Payment event {payment_event_id} is already matched to another expense")
         elif auto_match:
             # Auto-match
             candidates = await self.find_candidates(expense)
             if candidates:
                 best = candidates[0]
-                if best["match_score"] >= float(self.CONFIDENCE_THRESHOLD):
-                    payment_event = await self.db.get(PaymentEvent, best["payment_event_id"])
-                    match_basis = MatchBasis(best["match_basis"])
-                    match_score = Decimal(str(best["match_score"]))
-                elif best["match_score"] >= float(self.AMBIGUOUS_THRESHOLD):
-                    payment_event = await self.db.get(PaymentEvent, best["payment_event_id"])
-                    match_basis = MatchBasis(best["match_basis"])
-                    match_score = Decimal(str(best["match_score"]))
+                if best["match_score"] >= float(self.CONFIDENCE_THRESHOLD) or best["match_score"] >= float(self.AMBIGUOUS_THRESHOLD):
+                    stmt_pe = select(PaymentEvent).where(PaymentEvent.id == best["payment_event_id"]).with_for_update()
+                    pe_res = await self.db.execute(stmt_pe)
+                    candidate_pe = pe_res.scalar_one_or_none()
+
+                    # Check if another concurrent match claimed this payment event
+                    already_matched = await self.db.execute(
+                        select(ReconciliationRecord).where(
+                            ReconciliationRecord.payment_event_id == best["payment_event_id"],
+                            ReconciliationRecord.status.in_([
+                                ReconciliationStatus.MATCHED,
+                                ReconciliationStatus.MANUALLY_RESOLVED,
+                            ]),
+                        )
+                    )
+                    if not already_matched.scalars().first():
+                        payment_event = candidate_pe
+                        match_basis = MatchBasis(best["match_basis"])
+                        match_score = Decimal(str(best["match_score"]))
+                    else:
+                        payment_event = None
                 else:
                     # No good match - create unmatched record
                     return await self.create_reconciliation(
@@ -538,14 +577,24 @@ class ReconciliationService:
         page_size: int = 20,
         status_filter: str | None = None,
         project_id: UUID | None = None,
+        project_ids: list[UUID] | None = None,
     ) -> dict[str, Any]:
-        """List reconciliations with pagination."""
+        """List reconciliations with pagination and project scoping."""
+        if project_ids is not None and len(project_ids) == 0:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
         base_query = select(ReconciliationRecord)
 
         if project_id:
             base_query = base_query.where(
                 ReconciliationRecord.expense_id.in_(
                     select(Expense.id).where(Expense.project_id == project_id)
+                )
+            )
+        elif project_ids is not None:
+            base_query = base_query.where(
+                ReconciliationRecord.expense_id.in_(
+                    select(Expense.id).where(Expense.project_id.in_(project_ids))
                 )
             )
 
@@ -558,6 +607,12 @@ class ReconciliationService:
             total_q = total_q.where(
                 ReconciliationRecord.expense_id.in_(
                     select(Expense.id).where(Expense.project_id == project_id)
+                )
+            )
+        elif project_ids is not None:
+            total_q = total_q.where(
+                ReconciliationRecord.expense_id.in_(
+                    select(Expense.id).where(Expense.project_id.in_(project_ids))
                 )
             )
 
@@ -605,79 +660,71 @@ class ReconciliationService:
             "page_size": page_size,
         }
 
-    async def get_reconciliation_stats(self, project_id: UUID | None = None) -> dict[str, int]:
-        """Get reconciliation statistics."""
-        # Use completely independent queries to avoid any query building issues
-        if project_id:
-            total = await self.db.scalar(
-                select(func.count(ReconciliationRecord.id)).where(
+    async def get_reconciliation_stats(
+        self,
+        project_id: UUID | None = None,
+        project_ids: list[UUID] | None = None,
+    ) -> dict[str, int]:
+        """Get reconciliation statistics with project scoping."""
+        if project_ids is not None and len(project_ids) == 0:
+            return {
+                "total_records": 0,
+                "matched": 0,
+                "unmatched": 0,
+                "ambiguous": 0,
+                "manually_resolved": 0,
+            }
+
+        def _scope(q):
+            if project_id:
+                return q.where(
                     ReconciliationRecord.expense_id.in_(
                         select(Expense.id).where(Expense.project_id == project_id)
                     )
                 )
-            )
-            matched = await self.db.scalar(
-                select(func.count(ReconciliationRecord.id)).where(
+            elif project_ids is not None:
+                return q.where(
                     ReconciliationRecord.expense_id.in_(
-                        select(Expense.id).where(Expense.project_id == project_id)
-                    ),
-                    cast(ReconciliationRecord.status, String) == ReconciliationStatus.MATCHED.value,
+                        select(Expense.id).where(Expense.project_id.in_(project_ids))
+                    )
                 )
-            )
-            unmatched = await self.db.scalar(
-                select(func.count(ReconciliationRecord.id)).where(
-                    ReconciliationRecord.expense_id.in_(
-                        select(Expense.id).where(Expense.project_id == project_id)
-                    ),
-                    cast(ReconciliationRecord.status, String) == ReconciliationStatus.UNMATCHED.value,
-                )
-            )
-            ambiguous = await self.db.scalar(
-                select(func.count(ReconciliationRecord.id)).where(
-                    ReconciliationRecord.expense_id.in_(
-                        select(Expense.id).where(Expense.project_id == project_id)
-                    ),
-                    cast(ReconciliationRecord.status, String) == ReconciliationStatus.AMBIGUOUS.value,
-                )
-            )
-            manually_resolved = await self.db.scalar(
-                select(func.count(ReconciliationRecord.id)).where(
-                    ReconciliationRecord.expense_id.in_(
-                        select(Expense.id).where(Expense.project_id == project_id)
-                    ),
-                    cast(ReconciliationRecord.match_basis, String) == MatchBasis.MANUAL.value,
-                )
-            )
-        else:
-            total = await self.db.scalar(select(func.count(ReconciliationRecord.id)))
-            matched = await self.db.scalar(
-                select(func.count(ReconciliationRecord.id)).where(
-                    cast(ReconciliationRecord.status, String) == ReconciliationStatus.MATCHED.value,
-                )
-            )
-            unmatched = await self.db.scalar(
-                select(func.count(ReconciliationRecord.id)).where(
-                    cast(ReconciliationRecord.status, String) == ReconciliationStatus.UNMATCHED.value,
-                )
-            )
-            ambiguous = await self.db.scalar(
-                select(func.count(ReconciliationRecord.id)).where(
-                    cast(ReconciliationRecord.status, String) == ReconciliationStatus.AMBIGUOUS.value,
-                )
-            )
-            manually_resolved = await self.db.scalar(
-                select(func.count(ReconciliationRecord.id)).where(
-                    cast(ReconciliationRecord.match_basis, String) == MatchBasis.MANUAL.value,
-                )
-            )
+            return q
 
-        # Pending auto-match: RECONCILED expenses without reconciliation record
-        reconciled_query = select(func.count(Expense.id)).where(
-            cast(Expense.lifecycle_status, String) == LifecycleStatus.RECONCILED.value
+        total = await self.db.scalar(_scope(select(func.count(ReconciliationRecord.id))))
+        matched = await self.db.scalar(
+            _scope(
+                select(func.count(ReconciliationRecord.id)).where(
+                    cast(ReconciliationRecord.status, String) == ReconciliationStatus.MATCHED.value
+                )
+            )
         )
-        if project_id:
-            reconciled_query = reconciled_query.where(Expense.project_id == project_id)
-
+        unmatched = await self.db.scalar(
+            _scope(
+                select(func.count(ReconciliationRecord.id)).where(
+                    cast(ReconciliationRecord.status, String) == ReconciliationStatus.UNMATCHED.value
+                )
+            )
+        )
+        ambiguous = await self.db.scalar(
+            _scope(
+                select(func.count(ReconciliationRecord.id)).where(
+                    cast(ReconciliationRecord.status, String) == ReconciliationStatus.AMBIGUOUS.value
+                )
+            )
+        )
+        manually_resolved = await self.db.scalar(
+            _scope(
+                select(func.count(ReconciliationRecord.id)).where(
+                    cast(ReconciliationRecord.match_basis, String) == MatchBasis.MANUAL.value
+                )
+            )
+        )
+        # Pending auto-match: RECONCILED expenses without reconciliation record
+        reconciled_query = _scope(
+            select(func.count(Expense.id)).where(
+                cast(Expense.lifecycle_status, String) == LifecycleStatus.RECONCILED.value
+            )
+        )
         reconciled_count = await self.db.scalar(reconciled_query)
 
         # Subtract already reconciled

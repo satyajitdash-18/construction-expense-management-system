@@ -8,7 +8,8 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db as get_db_dep
-from app.core.dependencies import get_current_user as get_current_user_dep
+from app.core.dependencies import get_current_user as get_current_user_dep, require_admin
+from app.core.authorization import verify_project_access
 from app.models.enums import GDPRRequestType
 from app.models.user import User
 from app.schemas.audit_compliance import (
@@ -35,7 +36,7 @@ router = APIRouter(prefix="/audit-compliance", tags=["audit-compliance"])
 )
 async def create_retention_policy(
     request: DataRetentionPolicyCreate,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> DataRetentionPolicyResponse:
     """Create a data retention policy."""
@@ -106,7 +107,7 @@ async def update_retention_policy(
     archive_after_days: int | None = None,
     delete_after_days: int | None = None,
     is_active: bool | None = None,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> DataRetentionPolicyResponse:
     """Update a retention policy."""
@@ -131,19 +132,22 @@ async def update_retention_policy(
 @router.post("/retention-policies/{policy_id}/run", response_model=dict)
 async def run_retention_policy(
     policy_id: UUID,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> dict:
     """Execute a data retention policy."""
 
     service = create_audit_compliance_service(db)
-    results = await service.run_retention_policy(policy_id)
+    try:
+        results = await service.run_retention_policy(policy_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return {"results": results, "policy_id": str(policy_id)}
 
 
 @router.post("/retention-policies/run-all", response_model=dict)
 async def run_all_retention_policies(
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> dict:
     """Run all active retention policies."""
@@ -162,12 +166,15 @@ async def create_gdpr_request(
     db: AsyncSession = Depends(get_db_dep),
 ) -> GDPRRequestResponse:
     """Create a GDPR data subject request."""
+    user_roles = {r.name for r in current_user.roles}
+    target_user_id = request.user_id if ("admin" in user_roles and request.user_id) else current_user.id
+    target_email = request.email if ("admin" in user_roles and request.email) else current_user.email
 
     service = create_audit_compliance_service(db)
     request_id = await service.create_gdpr_request(
         request_type=GDPRRequestType(request.request_type),
-        user_id=request.user_id,
-        email=request.email,
+        user_id=target_user_id,
+        email=target_email,
         description=request.description,
         actor_id=current_user.id,
     )
@@ -187,6 +194,8 @@ async def list_gdpr_requests(
     db: AsyncSession = Depends(get_db_dep),
 ) -> GDPRRequestListResponse:
     """List GDPR requests."""
+    user_roles = {r.name for r in current_user.roles}
+    target_user_id = None if "admin" in user_roles else current_user.id
 
     service = create_audit_compliance_service(db)
     result = await service.list_gdpr_requests(
@@ -194,6 +203,7 @@ async def list_gdpr_requests(
         page_size=page_size,
         status_filter=status_filter,
         request_type=request_type,
+        user_id=target_user_id,
     )
 
     return GDPRRequestListResponse(
@@ -211,11 +221,15 @@ async def get_gdpr_request(
     db: AsyncSession = Depends(get_db_dep),
 ) -> GDPRRequestResponse:
     """Get a GDPR request by ID."""
-
     service = create_audit_compliance_service(db)
     gdpr_request = await service.get_gdpr_request(request_id)
     if not gdpr_request:
         raise HTTPException(status_code=404, detail="GDPR request not found")
+
+    user_roles = {r.name for r in current_user.roles}
+    if "admin" not in user_roles and gdpr_request.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="GDPR request not found")
+
     return GDPRRequestResponse.model_validate(gdpr_request)
 
 
@@ -223,7 +237,7 @@ async def get_gdpr_request(
 async def approve_gdpr_request(
     request_id: UUID,
     response_data: dict[str, Any] | None = None,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> GDPRRequestResponse:
     """Approve a GDPR request."""
@@ -247,7 +261,7 @@ async def approve_gdpr_request(
 async def reject_gdpr_request(
     request_id: UUID,
     rejection_reason: str,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> GDPRRequestResponse:
     """Reject a GDPR request."""
@@ -274,6 +288,21 @@ async def generate_audit_report(
     db: AsyncSession = Depends(get_db_dep),
 ) -> dict:
     """Generate an audit report."""
+    user_roles = {r.name for r in current_user.roles}
+    if "admin" not in user_roles:
+        from app.models.expense import Expense
+        if request.entity_type == "project" and request.entity_id:
+            await verify_project_access(db, current_user, request.entity_id)
+        elif request.entity_type == "expense" and request.entity_id:
+            exp = await db.get(Expense, request.entity_id)
+            if not exp:
+                raise HTTPException(status_code=404, detail="Expense not found")
+            await verify_project_access(db, current_user, exp.project_id)
+        elif request.entity_type == "user" and request.entity_id:
+            if request.entity_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Forbidden")
+        elif request.report_type in ("system_changes", "data_access"):
+            raise HTTPException(status_code=403, detail="Admin role required for system-level reports")
 
     service = create_audit_compliance_service(db)
     report_id = await service.generate_audit_report(
@@ -301,6 +330,8 @@ async def list_audit_reports(
     db: AsyncSession = Depends(get_db_dep),
 ) -> dict:
     """List audit reports."""
+    user_roles = {r.name for r in current_user.roles}
+    target_user_id = None if "admin" in user_roles else current_user.id
 
     service = create_audit_compliance_service(db)
     result = await service.list_audit_reports(
@@ -308,6 +339,7 @@ async def list_audit_reports(
         page_size=page_size,
         status_filter=status_filter,
         report_type=report_type,
+        user_id=target_user_id,
     )
 
     return {
@@ -329,6 +361,10 @@ async def get_audit_report(
 
     report = await db.get(AuditReport, report_id)
     if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    user_roles = {r.name for r in current_user.roles}
+    if "admin" not in user_roles and report.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Report not found")
 
     return {
@@ -359,6 +395,15 @@ async def download_audit_report(
     db: AsyncSession = Depends(get_db_dep),
 ) -> FileResponse:
     """Download an audit report file."""
+    from app.models.audit_compliance import AuditReport
+
+    report = await db.get(AuditReport, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    user_roles = {r.name for r in current_user.roles}
+    if "admin" not in user_roles and report.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Report not found")
 
     service = create_audit_compliance_service(db)
     try:
@@ -390,6 +435,22 @@ async def get_audit_trail(
     from sqlalchemy import func, select
 
     from app.models.audit_event import AuditEvent
+
+    # Authorization scoping for entity
+    from app.models.expense import Expense
+    from app.models.project import Project
+
+    if entity_type == "project":
+        await verify_project_access(db, current_user, entity_id)
+    elif entity_type == "expense":
+        exp = await db.get(Expense, entity_id)
+        if not exp:
+            raise HTTPException(status_code=404, detail="Expense not found")
+        await verify_project_access(db, current_user, exp.project_id)
+    elif entity_type == "user":
+        user_roles = {r.name for r in current_user.roles}
+        if "admin" not in user_roles and current_user.id != entity_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
 
     # Total count
     query = select(AuditEvent).where(

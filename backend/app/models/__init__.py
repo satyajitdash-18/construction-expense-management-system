@@ -38,6 +38,8 @@ from app.models.payment_event import PaymentEvent
 from app.models.processing_job import JobAttempt, ProcessingJob
 from app.models.project import Project
 from app.models.project_budget import ProjectBudget
+from app.models.project_member import ProjectMember
+from app.models.ledger_posting import LedgerPosting
 from app.models.receipt import Receipt
 from app.models.reconciliation_record import ReconciliationRecord
 from app.models.role import Role, UserRole
@@ -72,8 +74,10 @@ __all__ = [
     "AccountType",
     "EntryType",
     "Project",
+    "ProjectMember",
     "ProjectStatus",
     "ProjectBudget",
+    "LedgerPosting",
     "ProcessingJob",
     "JobAttempt",
     "JobType",

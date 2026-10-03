@@ -1,12 +1,13 @@
-"""Tests for OCR service."""
-
+import shutil
+from io import BytesIO
+from unittest.mock import AsyncMock, MagicMock, patch
+from PIL import Image
 import pytest
 import pytest_asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-from io import BytesIO
-from PIL import Image
 
 from app.services.ocr import OCRService, create_ocr_service
+
+_tesseract_available = shutil.which("tesseract") is not None
 
 
 class TestOCRService:
@@ -41,6 +42,7 @@ class TestOCRService:
         # After preprocessing, should be grayscale or binary
         assert processed.mode in ('L', '1')
 
+    @pytest.mark.skipif(not _tesseract_available, reason="Tesseract OCR binary not installed in PATH")
     @pytest.mark.asyncio
     async def test_extract_text_empty_image(self, ocr_service):
         """Test extraction on empty/blank image."""
@@ -57,8 +59,10 @@ class TestOCRService:
         assert isinstance(result['lines'], list)
         assert isinstance(result['word_count'], int)
 
+    @pytest.mark.skipif(not _tesseract_available, reason="Tesseract OCR binary not installed in PATH")
     @pytest.mark.asyncio
     async def test_process_file(self, ocr_service):
+
         """Test processing file from bytes."""
         img = Image.new('RGB', (100, 50), color='white')
         buffer = BytesIO()

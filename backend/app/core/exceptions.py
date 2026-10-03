@@ -75,15 +75,22 @@ async def app_exception_handler(request: StarletteRequest, exc: AppException) ->
 
 
 async def validation_exception_handler(request: StarletteRequest, exc: PydanticValidationError) -> JSONResponse:
+    sanitized_errors = []
+    for err in exc.errors():
+        sanitized_errors.append({
+            "loc": [str(x) for x in err.get("loc", [])],
+            "msg": str(err.get("msg", "")),
+            "type": str(err.get("type", "")),
+        })
     logger.warning(
         "validation_error",
         path=request.url.path,
         method=request.method,
-        errors=exc.errors(),
+        errors=sanitized_errors,
     )
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"error": "Validation failed", "details": exc.errors()},
+        content={"error": "Validation failed", "details": sanitized_errors},
     )
 
 

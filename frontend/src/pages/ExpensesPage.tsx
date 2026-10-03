@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Plus, Search, Eye, Trash2, ArrowUpDown, X, MoreHorizontal, FileText, ChevronLeft, ChevronRight, Receipt } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { format } from 'date-fns';
 import { api } from '@/services/api';
+import type { Expense, Project, Vendor, ExpenseCategory } from '@/types/api';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -41,7 +42,13 @@ const expenseSchema = z.object({
     amount: z.coerce.number().min(0.01, 'Amount must be greater than 0'),
     tax_amount: z.coerce.number().optional(),
   })).optional(),
-});
+}).refine(
+  (data) => Math.abs((Number(data.subtotal) + Number(data.tax_amount || 0)) - Number(data.total)) <= 0.05,
+  {
+    message: 'Subtotal + Tax Amount must equal Total',
+    path: ['total'],
+  }
+);
 
 type ExpenseFormData = z.infer<typeof expenseSchema>;
 
@@ -62,7 +69,7 @@ const getStatusVariant = (status: string) => {
 };
 
 export default function ExpensesPage() {
-  const [expenses, setExpenses] = useState<any[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -76,23 +83,22 @@ export default function ExpensesPage() {
   const [sortField, setSortField] = useState<SortField>('transaction_date');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingExpense, setEditingExpense] = useState<any | null>(null);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [selectedExpense, setSelectedExpense] = useState<any | null>(null);
-  const [projects, setProjects] = useState<any[]>([]);
-  const [vendors, setVendors] = useState<any[]>([]);
-  const [categories, setCategories] = useState<any[]>([]);
+  const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const { toast } = useToast();
 
-  // Use 'any' to avoid resolver type inference conflicts
-  const form = useForm<any>({
-    resolver: zodResolver(expenseSchema) as any,
+  const form = useForm<ExpenseFormData>({
+    resolver: zodResolver(expenseSchema) as unknown as import('react-hook-form').Resolver<ExpenseFormData>,
     defaultValues: {
       currency: 'INR',
       payment_method: 'CASH',
-      subtotal: '',
-      tax_amount: '',
-      total: '',
+      subtotal: 0,
+      tax_amount: 0,
+      total: 0,
       line_items: [],
     },
   });
@@ -103,12 +109,7 @@ export default function ExpensesPage() {
     name: 'line_items',
   });
 
-  useEffect(() => {
-    fetchExpenses();
-    fetchDropdowns();
-  }, [page, search, statusFilter, projectFilter, vendorFilter, dateFrom, dateTo, sortField, sortDir]);
-
-  const fetchExpenses = async () => {
+  const fetchExpenses = useCallback(async () => {
     setLoading(true);
     try {
       const response = await api.getExpenses({
@@ -120,29 +121,37 @@ export default function ExpensesPage() {
         date_from: dateFrom || undefined,
         date_to: dateTo || undefined,
       });
-      setExpenses(response.items);
-      setTotal(response.total);
+      setExpenses(response.items || []);
+      setTotal(response.total || 0);
     } catch (error) {
       console.error('Failed to fetch expenses:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, pageSize, statusFilter, projectFilter, vendorFilter, dateFrom, dateTo]);
 
-  const fetchDropdowns = async () => {
+  const fetchDropdowns = useCallback(async () => {
     try {
       const [projectsRes, vendorsRes, categoriesRes] = await Promise.all([
         api.getProjects({ page_size: 100 }),
         api.getVendors({ page_size: 100 }),
         api.getCategories(),
       ]);
-      setProjects(projectsRes.items);
-      setVendors(vendorsRes.items);
-      setCategories(categoriesRes);
+      setProjects(projectsRes.items || []);
+      setVendors(vendorsRes.items || []);
+      setCategories(categoriesRes || []);
     } catch (error) {
       console.error('Failed to fetch dropdowns:', error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchExpenses();
+  }, [fetchExpenses]);
+
+  useEffect(() => {
+    fetchDropdowns();
+  }, [fetchDropdowns]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -152,6 +161,17 @@ export default function ExpensesPage() {
       setSortDir('asc');
     }
   };
+
+  const sortedExpenses = [...expenses].sort((a, b) => {
+    const aVal = a[sortField] ?? '';
+    const bVal = b[sortField] ?? '';
+    if (typeof aVal === 'number' && typeof bVal === 'number') {
+      return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+    }
+    const aStr = String(aVal).toLowerCase();
+    const bStr = String(bVal).toLowerCase();
+    return sortDir === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+  });
 
   const onExpenseSubmit = async (data: ExpenseFormData) => {
     try {
@@ -165,8 +185,9 @@ export default function ExpensesPage() {
       setDialogOpen(false);
       setEditingExpense(null);
       fetchExpenses();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to save expense', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save expense';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
@@ -175,12 +196,13 @@ export default function ExpensesPage() {
       await api.deleteExpense(id);
       setDeleteConfirm(null);
       fetchExpenses();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to delete expense', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete expense';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
-  const handleEdit = (expense: any) => {
+  const handleEdit = (expense: Expense) => {
     setEditingExpense(expense);
     reset({
       project_id: expense.project_id,
@@ -192,14 +214,20 @@ export default function ExpensesPage() {
       payment_method: expense.payment_method,
       vendor_id: expense.vendor_id || '',
       category_id: expense.category_id || '',
-      vendor_name: expense.vendor_name || '',
+      vendor_name: (expense as { vendor_name?: string }).vendor_name || '',
       gstin_supplier: expense.gstin_supplier || '',
       hsn_sac_code: expense.hsn_sac_code || '',
       cgst_amount: expense.cgst_amount || 0,
       sgst_amount: expense.sgst_amount || 0,
       igst_amount: expense.igst_amount || 0,
       irn: expense.irn || '',
-      line_items: expense.line_items || [],
+      line_items: (expense.line_items || []).map(li => ({
+        description: li.description,
+        quantity: li.quantity ?? undefined,
+        unit_price: li.unit_price ?? undefined,
+        amount: li.amount,
+        tax_amount: li.tax_amount ?? undefined,
+      })),
     });
     setDialogOpen(true);
   };
@@ -334,7 +362,7 @@ export default function ExpensesPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {expenses.map((expense) => (
+                    {sortedExpenses.map((expense) => (
                       <TableRow key={expense.id}>
                         <TableCell>{format(new Date(expense.transaction_date), 'PP')}</TableCell>
                         <TableCell>{expense.project?.name || 'N/A'}</TableCell>

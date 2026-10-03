@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -30,13 +30,13 @@ class ReconciliationRecord(Base):
         PGUUID(as_uuid=True), ForeignKey("payment_events.id", ondelete="SET NULL"), nullable=True, index=True
     )
     status: Mapped[ReconciliationStatus] = mapped_column(
-        Enum(ReconciliationStatus, name="reconciliation_status", create_constraint=True),
+        Enum(ReconciliationStatus, name="reconciliation_status", native_enum=False, create_constraint=True),
         nullable=False,
         default=ReconciliationStatus.UNMATCHED,
         index=True,
     )
     match_basis: Mapped[MatchBasis | None] = mapped_column(
-        Enum(MatchBasis, name="match_basis", create_constraint=True),
+        Enum(MatchBasis, name="match_basis", native_enum=False, create_constraint=True),
         nullable=True,
     )
     match_score: Mapped[float | None] = mapped_column(nullable=True)
@@ -57,7 +57,14 @@ class ReconciliationRecord(Base):
     )
     resolver: Mapped["User | None"] = relationship(lazy="selectin")
 
-    __table_args__ = ()
+    __table_args__ = (
+        Index(
+            "uq_active_payment_reconciliation",
+            "payment_event_id",
+            unique=True,
+            postgresql_where=text("payment_event_id IS NOT NULL AND status IN ('MATCHED', 'MANUALLY_RESOLVED')"),
+        ),
+    )
 
     def __repr__(self) -> str:
         return f"<ReconciliationRecord(id={self.id}, expense={self.expense_id}, payment={self.payment_event_id}, status={self.status})>"

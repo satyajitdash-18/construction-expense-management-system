@@ -19,15 +19,18 @@ logger = get_logger(__name__)
 class StorageService:
     """Service for managing object storage with MinIO."""
 
-    def __init__(self) -> None:
-        self.client = Minio(
-            endpoint=settings.MINIO_ENDPOINT,
-            access_key=settings.MINIO_ACCESS_KEY,
-            secret_key=settings.MINIO_SECRET_KEY,
-            secure=settings.MINIO_SECURE,
-        )
+    def __init__(self, client: Minio | None = None) -> None:
         self.bucket_name = settings.MINIO_BUCKET
-        self._ensure_bucket()
+        if client is not None:
+            self.client = client
+        else:
+            self.client = Minio(
+                endpoint=settings.MINIO_ENDPOINT,
+                access_key=settings.MINIO_ACCESS_KEY,
+                secret_key=settings.MINIO_SECRET_KEY,
+                secure=settings.MINIO_SECURE,
+            )
+            self._ensure_bucket()
 
     def _ensure_bucket(self) -> None:
         """Create bucket if it doesn't exist."""
@@ -84,6 +87,38 @@ class StorageService:
             logger.error("Failed to upload file", object_name=object_name, error=str(e))
             raise
 
+    def upload_stream(
+        self,
+        object_name: str,
+        stream: BinaryIO,
+        length: int,
+        checksum: str,
+        content_type: str | None = None,
+        metadata: Mapping[str, str] | None = None,
+    ) -> tuple[str, str]:
+        """
+        Stream a file-like object directly to MinIO without reading full content into memory.
+        """
+        if content_type is None:
+            content_type, _ = mimetypes.guess_type(object_name)
+            if content_type is None:
+                content_type = "application/octet-stream"
+
+        try:
+            self.client.put_object(
+                bucket_name=self.bucket_name,
+                object_name=object_name,
+                data=stream,
+                length=length,
+                content_type=content_type,
+                metadata=dict(metadata) if metadata else None,
+            )
+            logger.info("Streamed file upload to MinIO", object_name=object_name, size=length, checksum=checksum)
+            return object_name, checksum
+        except S3Error as e:
+            logger.error("Failed to stream file to MinIO", object_name=object_name, error=str(e))
+            raise
+
     def upload_fileobj(
         self,
         object_name: str,
@@ -92,21 +127,26 @@ class StorageService:
         metadata: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         """
-        Upload a file-like object to MinIO.
-
-        Args:
-            object_name: Object key in bucket
-            fileobj: File-like object
-            content_type: MIME type
-            metadata: Additional metadata
-
-        Returns:
-            Tuple of (object_name, checksum)
+        Upload a file-like object to MinIO with stream length calculation.
         """
+        fileobj.seek(0, io.SEEK_END)
+        length = fileobj.tell()
         fileobj.seek(0)
-        data = fileobj.read()
+        
+        hasher = hashlib.sha256()
+        while chunk := fileobj.read(64 * 1024):
+            hasher.update(chunk)
+        checksum = hasher.hexdigest()
         fileobj.seek(0)
-        return self.upload_file(object_name, data, content_type, metadata)
+
+        return self.upload_stream(
+            object_name=object_name,
+            stream=fileobj,
+            length=length,
+            checksum=checksum,
+            content_type=content_type,
+            metadata=metadata,
+        )
 
     def download_file(self, object_name: str) -> bytes:
         """Download a file from MinIO."""

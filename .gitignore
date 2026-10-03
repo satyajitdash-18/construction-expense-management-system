@@ -55,6 +55,7 @@ temp/
 docker-data/
 postgres-data/
 pgdata/
+infrastructure/docker/minio/bin/
 
 # IDE
 .vscode/

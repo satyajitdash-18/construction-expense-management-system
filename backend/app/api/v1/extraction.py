@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import verify_project_access
 from app.core.database import get_db as get_db_dep
 from app.core.dependencies import get_current_user as get_current_user_dep
 from app.core.logging import get_logger
@@ -43,7 +44,11 @@ async def start_extraction(
         raise HTTPException(status_code=404, detail="Evidence not found")
 
     expense = await db.get(Expense, evidence.expense_id)
-    source_event_id = expense.source_event_id if expense else None
+    if not expense:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    await verify_project_access(db, current_user, expense.project_id)
+    source_event_id = expense.source_event_id
 
     if request.use_cached_ocr:
         ocr_job = None
@@ -88,6 +93,12 @@ async def extract_sync(
     evidence = await db.get(Evidence, request.evidence_id)
     if not evidence:
         raise HTTPException(status_code=404, detail="Evidence not found")
+
+    expense = await db.get(Expense, evidence.expense_id)
+    if not expense:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    await verify_project_access(db, current_user, expense.project_id)
 
     if request.use_cached_ocr:
         result = await db.execute(

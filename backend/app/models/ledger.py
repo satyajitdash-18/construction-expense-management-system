@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -74,11 +74,14 @@ class LedgerEntry(Base):
         PGUUID(as_uuid=True), ForeignKey("audit_events.id", ondelete="RESTRICT"), nullable=False
     )
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    is_reversal: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
 
     account: Mapped["LedgerAccount"] = relationship(back_populates="entries", lazy="selectin")
     expense: Mapped["Expense | None"] = relationship(lazy="selectin")
 
-    __table_args__ = ()
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="chk_ledger_entry_amount_positive"),
+    )
 
     def __repr__(self) -> str:
         return f"<LedgerEntry(id={self.id}, account={self.ledger_account_id}, {self.entry_type}={self.amount})>"

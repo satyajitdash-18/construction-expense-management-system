@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import verify_project_access
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
 from app.models.enums import JobStatus, JobType
@@ -36,7 +37,11 @@ async def start_ocr_processing(
         raise HTTPException(status_code=404, detail="Evidence not found")
 
     expense = await db.get(Expense, evidence.expense_id)
-    source_event_id = expense.source_event_id if expense else None
+    if not expense:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    await verify_project_access(db, current_user, expense.project_id)
+    source_event_id = expense.source_event_id
 
     # Create processing job
     job = ProcessingJob(

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -10,6 +11,7 @@ from app.models.enums import LifecycleStatus as LifecycleStatusEnum
 from app.models.expense import Expense
 from app.models.project import Project
 from app.models.project_budget import ProjectBudget
+from app.models.project_member import ProjectMember
 
 if TYPE_CHECKING:
     from app.models.expense import Expense
@@ -42,23 +44,32 @@ class ProjectRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list(
+    async def list_projects(
         self,
         status_filter: str | None = None,
+        project_ids: list[UUID] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Project]:
         query = select(Project).options(selectinload(Project.budgets))
         if status_filter:
             query = query.where(Project.status == status_filter)
+        if project_ids is not None:
+            query = query.where(Project.id.in_(project_ids))
         query = query.order_by(Project.created_at.desc()).limit(limit).offset(offset)
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
-    async def count(self, status_filter: str | None = None) -> int:
+    async def count(
+        self,
+        status_filter: str | None = None,
+        project_ids: list[UUID] | None = None,
+    ) -> int:
         query = select(func.count(Project.id))
         if status_filter:
             query = query.where(Project.status == status_filter)
+        if project_ids is not None:
+            query = query.where(Project.id.in_(project_ids))
         result = await self.session.execute(query)
         return result.scalar_one()
 
@@ -77,6 +88,15 @@ class ProjectRepository:
         )
         self.session.add(project)
         await self.session.flush()
+
+        member = ProjectMember(
+            project_id=project.id,
+            user_id=created_by,
+            role="project_manager",
+        )
+        self.session.add(member)
+        await self.session.flush()
+
         return project
 
     async def update(self, project: Project) -> Project:
@@ -119,27 +139,30 @@ class ProjectRepository:
 
         # Build budget vs actual
         budget_vs_actual: list[dict] = []
-        total_budget: float = 0.0
-        total_actual: float = 0.0
+        total_budget: Decimal = Decimal("0.00")
+        total_actual: Decimal = Decimal("0.00")
 
         for budget in budgets:
-            actual = actuals.get(budget.category_id, 0)
+            actual = actuals.get(budget.category_id, Decimal("0.00")) or Decimal("0.00")
+            b_amount = Decimal(str(budget.amount))
+            act_amount = Decimal(str(actual))
+            var_amount = b_amount - act_amount
             budget_vs_actual.append({
                 "category_id": str(budget.category_id) if budget.category_id else None,
-                "budget": float(budget.amount),
-                "actual": float(actual) if actual else 0.0,
-                "variance": float(budget.amount - (actual or 0)),
+                "budget": b_amount,
+                "actual": act_amount,
+                "variance": var_amount,
                 "currency": budget.currency,
                 "effective_from": budget.effective_from.isoformat() if budget.effective_from else None,
                 "effective_to": budget.effective_to.isoformat() if budget.effective_to else None,
             })
-            total_budget += float(budget.amount)
-            total_actual += float(actual) if actual else 0.0
+            total_budget += b_amount
+            total_actual += act_amount
 
         # Add overall project budget (category_id is None)
         overall_budget = next((b for b in budgets if b.category_id is None), None)
         if overall_budget:
-            total_budget = float(overall_budget.amount)
+            total_budget = Decimal(str(overall_budget.amount))
             # Recalculate actuals for overall
             total_expenses_result = await self.session.execute(
                 select(func.sum(Expense.total))
@@ -152,7 +175,7 @@ class ProjectRepository:
                     )
                 )
             )
-            total_actual = float(total_expenses_result.scalar_one_or_none() or 0.0)
+            total_actual = Decimal(str(total_expenses_result.scalar_one_or_none() or "0.00"))
 
         return {
             "project_id": str(project_id),

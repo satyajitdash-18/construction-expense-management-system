@@ -39,6 +39,13 @@ async def test_engine():
 async def db_session(test_engine):
     async_session = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session() as session:
+        from app.models.role import Role
+        from sqlalchemy import select
+        for r_name in ["admin", "project_manager", "site_user", "finance_user"]:
+            existing = await session.execute(select(Role).where(Role.name == r_name))
+            if not existing.scalar_one_or_none():
+                session.add(Role(name=r_name))
+        await session.commit()
         yield session
         await session.rollback()
 

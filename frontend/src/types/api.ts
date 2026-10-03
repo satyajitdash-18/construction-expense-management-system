@@ -38,6 +38,12 @@ export interface Vendor {
   gstin: string | null;
   phone: string | null;
   notes: string | null;
+  email?: string | null;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  pincode?: string | null;
+  contact_person?: string | null;
   created_at: string;
   updated_at: string | null;
 }
@@ -76,6 +82,7 @@ export interface Expense {
   created_at: string;
   updated_at: string | null;
   vendor?: Vendor;
+  vendor_name?: string | null;
   category?: ExpenseCategory;
   project?: Project;
   line_items?: ExpenseLineItem[];
@@ -222,6 +229,65 @@ export interface ProcessingJob {
   status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'RETRYING';
   created_at: string;
   updated_at: string | null;
+}
+
+export interface OCRJobItem {
+  id: string;
+  job_type?: string;
+  source_event_id: string | null;
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'RETRYING';
+  result?: { text?: string; full_text?: string; avg_confidence?: number; word_count?: number } | null;
+  error_message?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+  evidence?: { file_name?: string };
+  confidence_score?: number | null;
+}
+
+export interface ExtractionJobItem {
+  id: string;
+  job_type?: string;
+  source_event_id: string | null;
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'RETRYING';
+  result?: Record<string, unknown> | null;
+  error_message?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+  evidence?: { file_name?: string };
+  model?: string;
+  confidence_score?: number | null;
+}
+
+export interface NotificationItem {
+  id: string;
+  user_id?: string | null;
+  channel: string;
+  subject?: string | null;
+  body: string;
+  status: string;
+  priority?: string;
+  title?: string;
+  read?: boolean;
+  is_read?: boolean;
+  error_message?: string | null;
+  sent_at?: string | null;
+  created_at: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface NotificationStats {
+  total_sent: number;
+  total_failed: number;
+  by_channel: Record<string, number>;
+  by_status: Record<string, number>;
+  by_priority: Record<string, number>;
+  success_rate: number;
+  total?: number;
+  sent?: number;
+  pending?: number;
+  failed?: number;
+  unread?: number;
+  read?: number;
 }
 
 export interface WebhookConfig {

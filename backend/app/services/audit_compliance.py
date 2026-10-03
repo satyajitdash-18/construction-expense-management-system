@@ -316,10 +316,13 @@ class AuditComplianceService:
         page_size: int = 20,
         status_filter: str | None = None,
         request_type: str | None = None,
+        user_id: UUID | None = None,
     ) -> dict[str, Any]:
         """List GDPR requests."""
         query = select(GDPRRequest)
 
+        if user_id:
+            query = query.where(GDPRRequest.user_id == user_id)
         if status_filter:
             query = query.where(GDPRRequest.status == GDPRRequestStatus(status_filter))
         if request_type:
@@ -539,10 +542,13 @@ class AuditComplianceService:
         page_size: int = 20,
         status_filter: str | None = None,
         report_type: str | None = None,
+        user_id: UUID | None = None,
     ) -> dict[str, Any]:
         """List audit reports."""
         query = select(AuditReport)
 
+        if user_id:
+            query = query.where(AuditReport.user_id == user_id)
         if status_filter:
             query = query.where(AuditReport.status == status_filter)
         if report_type:

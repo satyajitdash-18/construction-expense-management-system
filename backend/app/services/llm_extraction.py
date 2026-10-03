@@ -3,10 +3,11 @@
 import json
 import re
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -75,14 +76,14 @@ class ExtractionResult(BaseModel):
     vendor_gstin: str | None = None
     transaction_date: str | None = None
     invoice_number: str | None = None
-    subtotal: float | None = None
-    tax_amount: float | None = None
-    total_amount: float | None = None
+    subtotal: Decimal | None = None
+    tax_amount: Decimal | None = None
+    total_amount: Decimal | None = None
     currency: str = "INR"
     payment_method: str | None = None
-    cgst_amount: float | None = None
-    sgst_amount: float | None = None
-    igst_amount: float | None = None
+    cgst_amount: Decimal | None = None
+    sgst_amount: Decimal | None = None
+    igst_amount: Decimal | None = None
     hsn_sac_code: str | None = None
     irn: str | None = None
     line_items: list[dict[str, Any]] = Field(default_factory=list)
@@ -90,6 +91,44 @@ class ExtractionResult(BaseModel):
     raw_response: str | None = None
 
     model_config = ConfigDict(extra="ignore")
+
+    @field_serializer("total_amount", "subtotal", "tax_amount", "cgst_amount", "sgst_amount", "igst_amount")
+    def serialize_decimal(self, v: Decimal | None) -> float | None:
+        return float(v) if v is not None else None
+
+    def validate_financial_invariants(self) -> tuple[bool, str | None]:
+        """Validate mathematical invariants deterministically using strict Decimal arithmetic."""
+        if self.total_amount is None:
+            return False, "Total amount is missing"
+        if self.total_amount < Decimal("0"):
+            return False, "Total amount is negative"
+
+        sub = self.subtotal if self.subtotal is not None else self.total_amount
+        tax = self.tax_amount if self.tax_amount is not None else Decimal("0.00")
+
+        if sub < Decimal("0") or tax < Decimal("0"):
+            return False, "Subtotal or tax amount is negative"
+
+        # Deterministic mathematical invariant: subtotal + tax must equal total exactly
+        if (sub + tax) != self.total_amount:
+            return False, f"Total ({self.total_amount}) does not match subtotal ({sub}) + tax ({tax})"
+
+        # Check GST components if present
+        cgst = self.cgst_amount or Decimal("0.00")
+        sgst = self.sgst_amount or Decimal("0.00")
+        igst = self.igst_amount or Decimal("0.00")
+        if cgst < Decimal("0") or sgst < Decimal("0") or igst < Decimal("0"):
+            return False, "GST amounts cannot be negative"
+
+        if self.tax_amount is not None and (cgst > Decimal("0") or sgst > Decimal("0") or igst > Decimal("0")):
+            if igst > Decimal("0"):
+                if igst != self.tax_amount:
+                    return False, f"IGST ({igst}) does not match tax amount ({self.tax_amount})"
+            elif (cgst > Decimal("0") or sgst > Decimal("0")):
+                if (cgst + sgst) != self.tax_amount:
+                    return False, f"CGST ({cgst}) + SGST ({sgst}) does not match tax amount ({self.tax_amount})"
+
+        return True, None
 
 
 class LLMProvider(ABC):
@@ -118,6 +157,14 @@ class LLMProvider(ABC):
                     data["confidence_score"] = 0.85
             else:
                 data["confidence_score"] = 0.85
+
+            # Quantize monetary fields to Decimal("0.01")
+            for field in ("total_amount", "subtotal", "tax_amount", "cgst_amount", "sgst_amount", "igst_amount"):
+                if field in data and data[field] is not None:
+                    try:
+                        data[field] = Decimal(str(data[field])).quantize(Decimal("0.01"))
+                    except Exception:
+                        data[field] = None
 
             return ExtractionResult(**data, raw_response=content)
         except Exception as e:

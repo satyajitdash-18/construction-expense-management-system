@@ -16,6 +16,7 @@ from app.core.logging import get_logger
 from app.models.enums import AccountType, EntryType, LifecycleStatus
 from app.models.expense import Expense
 from app.models.ledger import LedgerAccount, LedgerEntry
+from app.models.ledger_posting import LedgerPosting
 
 logger = get_logger(__name__)
 
@@ -76,21 +77,39 @@ class PostingService:
         - Debit: Input IGST (Asset - recoverable)
         - Credit: Accounts Payable / Cash / Bank
         """
-        expense = await self.db.get(Expense, expense_id)
+        # Concurrency protection: acquire row lock on expense
+        stmt = select(Expense).where(Expense.id == expense_id).with_for_update()
+        result = await self.db.execute(stmt)
+        expense = result.scalar_one_or_none() if hasattr(result, "scalar_one_or_none") else None
+        if not isinstance(expense, Expense):
+            expense = await self.db.get(Expense, expense_id)
         if not expense:
             raise ValueError(f"Expense {expense_id} not found")
 
         if expense.lifecycle_status not in [LifecycleStatus.RECONCILED, LifecycleStatus.POSTED]:
             raise ValueError(f"Expense must be RECONCILED or POSTED, current: {expense.lifecycle_status}")
 
-        # Check if already posted
+        # Check if already actively posted in ledger_postings
+        existing_posting = await self.db.execute(
+            select(LedgerPosting).where(
+                LedgerPosting.expense_id == expense_id,
+                LedgerPosting.status == "POSTED",
+            )
+        )
+        existing_rec = existing_posting.scalar_one_or_none()
+        if isinstance(existing_rec, LedgerPosting):
+            raise ValueError(f"Expense {expense_id} already posted to ledger")
+
+        # Check existing non-reversal ledger entries
         existing = await self.db.execute(
             select(LedgerEntry).where(
                 LedgerEntry.expense_id == expense_id,
                 LedgerEntry.source_audit_event_id.is_not(None),
+                LedgerEntry.is_reversal == False,  # noqa: E712
             )
         )
-        if existing.scalars().first():
+        existing_entry = existing.scalars().first()
+        if isinstance(existing_entry, LedgerEntry):
             raise ValueError(f"Expense {expense_id} already posted to ledger")
 
         # Get or create default accounts
@@ -224,6 +243,14 @@ class PostingService:
             entry.source_audit_event_id = audit_event_id
             self.db.add(entry)
 
+        posting_record = LedgerPosting(
+            expense_id=expense_id,
+            project_id=expense.project_id,
+            status="POSTED",
+            source_audit_event_id=audit_event_id,
+        )
+        self.db.add(posting_record)
+
         await self.db.flush()
 
         # Update expense status
@@ -328,35 +355,37 @@ class PostingService:
         page: int = 1,
         page_size: int = 20,
         project_id: UUID | None = None,
+        project_ids: list[UUID] | None = None,
     ) -> dict[str, Any]:
-        """List all posted expenses with pagination."""
-        query = select(LedgerEntry).where(LedgerEntry.expense_id.is_not(None))
+        """List all posted expenses with pagination and project scoping."""
+        if project_ids is not None and len(project_ids) == 0:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
+        base_filter = []
         if project_id:
-            query = query.where(
+            base_filter.append(
                 LedgerEntry.expense_id.in_(
                     select(Expense.id).where(Expense.project_id == project_id)
+                )
+            )
+        elif project_ids is not None:
+            base_filter.append(
+                LedgerEntry.expense_id.in_(
+                    select(Expense.id).where(Expense.project_id.in_(project_ids))
                 )
             )
 
         # Get total count
         count_query = select(func.count()).select_from(
-            select(LedgerEntry.expense_id).distinct().where(LedgerEntry.expense_id.is_not(None)).subquery()
+            select(LedgerEntry.expense_id).distinct().where(LedgerEntry.expense_id.is_not(None), *base_filter).subquery()
         )
         total_result = await self.db.execute(count_query)
         total = total_result.scalar() or 0
 
         # Paginate by expense
         expense_ids_query = select(LedgerEntry.expense_id).distinct().where(
-            LedgerEntry.expense_id.is_not(None)
+            LedgerEntry.expense_id.is_not(None), *base_filter
         )
-        if project_id:
-            expense_ids_query = expense_ids_query.where(
-                LedgerEntry.expense_id.in_(
-                    select(Expense.id).where(Expense.project_id == project_id)
-                )
-            )
-
         expense_ids_query = expense_ids_query.order_by(LedgerEntry.posted_at.desc()).offset((page - 1) * page_size).limit(page_size)
         expense_ids_result = await self.db.execute(expense_ids_query)
         expense_ids = [row[0] for row in expense_ids_result]
@@ -377,14 +406,20 @@ class PostingService:
     async def get_account_balances(
         self,
         project_id: UUID | None = None,
+        project_ids: list[UUID] | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
-        """Get current account balances."""
+        """Get current account balances with project scoping."""
+        if project_ids is not None and len(project_ids) == 0:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
         query = select(LedgerAccount)
 
         if project_id:
             query = query.where(LedgerAccount.project_id == project_id)
+        elif project_ids is not None:
+            query = query.where(LedgerAccount.project_id.in_(project_ids))
 
         # Get total count
         count_query = select(func.count()).select_from(query.subquery())
@@ -492,9 +527,134 @@ class PostingService:
             "project_id": project_id,
             "as_of_date": as_of_date,
             "accounts": accounts_data,
-            "total_debits": float(total_debits),
-            "total_credits": float(total_credits),
+            "total_debits": total_debits,
+            "total_credits": total_credits,
             "is_balanced": total_debits == total_credits,
+        }
+
+    async def reverse_posting(
+        self,
+        expense_id: UUID,
+        actor_id: UUID | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Reverse a posted expense by creating compensating reversing ledger entries.
+        Follows GAAP double-entry immutability rules.
+        """
+        # Concurrency protection: acquire row lock on expense
+        stmt = select(Expense).where(Expense.id == expense_id).with_for_update()
+        result = await self.db.execute(stmt)
+        expense = result.scalar_one_or_none() if hasattr(result, "scalar_one_or_none") else None
+        if not isinstance(expense, Expense):
+            expense = await self.db.get(Expense, expense_id)
+        if not expense:
+            raise ValueError(f"Expense {expense_id} not found")
+
+        if expense.lifecycle_status != LifecycleStatus.POSTED:
+            raise ValueError(f"Expense {expense_id} is not currently posted (status: {expense.lifecycle_status.value})")
+
+        # Find active posting record
+        posting_res = await self.db.execute(
+            select(LedgerPosting).where(
+                LedgerPosting.expense_id == expense_id,
+                LedgerPosting.status == "POSTED",
+            ).with_for_update()
+        )
+        posting = posting_res.scalar_one_or_none()
+        if not posting:
+            raise ValueError(f"No active posting found for expense {expense_id}")
+
+        # Find previous non-reversal ledger entries
+        entries_res = await self.db.execute(
+            select(LedgerEntry).where(
+                LedgerEntry.expense_id == expense_id,
+                LedgerEntry.is_reversal == False,  # noqa: E712
+            )
+        )
+        original_entries = list(entries_res.scalars().all())
+        if not original_entries:
+            raise ValueError(f"No active ledger entries found to reverse for expense {expense_id}")
+
+        # Create balanced compensating reversal entries
+        reversal_entries = []
+        for orig in original_entries:
+            # Swap DEBIT <-> CREDIT
+            reversal_type = EntryType.CREDIT if orig.entry_type == EntryType.DEBIT else EntryType.DEBIT
+            reversal_entry = LedgerEntry(
+                ledger_account_id=orig.ledger_account_id,
+                expense_id=expense_id,
+                amount=orig.amount,
+                entry_type=reversal_type,
+                posted_at=datetime.now(UTC),
+                source_audit_event_id=None,
+                description=f"REVERSAL: {orig.description or 'Compensating entry'}"[:1000],
+                is_reversal=True,
+            )
+            reversal_entries.append(reversal_entry)
+
+        # Invariant check
+        rev_debit = sum(Decimal(str(e.amount)) for e in reversal_entries if e.entry_type == EntryType.DEBIT)
+        rev_credit = sum(Decimal(str(e.amount)) for e in reversal_entries if e.entry_type == EntryType.CREDIT)
+        if rev_debit != rev_credit:
+            raise ValueError(f"Reversal invariant violated: debits ({rev_debit}) != credits ({rev_credit})")
+
+        # Create audit event
+        audit_event_id = await write_audit_event(
+            session=self.db,
+            event_type="expense.posting_reversed",
+            entity_type="expense",
+            entity_id=expense_id,
+            actor_id=actor_id,
+            payload={
+                "expense_id": str(expense_id),
+                "reason": reason,
+                "reversal_amount": float(expense.total),
+                "entry_count": len(reversal_entries),
+            },
+        )
+
+        for entry in reversal_entries:
+            entry.source_audit_event_id = audit_event_id
+            self.db.add(entry)
+
+        if posting:
+            posting.status = "REVERSED"
+            posting.reversed_at = datetime.now(UTC)
+            posting.reversal_reason = reason
+            posting.reversal_audit_event_id = audit_event_id
+        else:
+            posting = LedgerPosting(
+                expense_id=expense_id,
+                project_id=expense.project_id,
+                status="REVERSED",
+                posted_at=datetime.now(UTC),
+                reversed_at=datetime.now(UTC),
+                reversal_reason=reason,
+                source_audit_event_id=audit_event_id,
+                reversal_audit_event_id=audit_event_id,
+            )
+            self.db.add(posting)
+
+        expense.lifecycle_status = LifecycleStatus.RECONCILED
+        expense.updated_at = datetime.now(UTC)
+        await self.db.commit()
+
+        return {
+            "expense_id": expense_id,
+            "status": "REVERSED",
+            "message": "Expense posting reversed successfully",
+            "ledger_entries": [
+                {
+                    "id": e.id,
+                    "ledger_account_id": e.ledger_account_id,
+                    "amount": float(e.amount),
+                    "entry_type": e.entry_type.value,
+                    "posted_at": e.posted_at,
+                    "is_reversal": True,
+                }
+                for e in reversal_entries
+            ],
         }
 
 

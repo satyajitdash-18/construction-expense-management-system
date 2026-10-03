@@ -2,11 +2,16 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import (
+    get_user_accessible_project_ids,
+    verify_project_access,
+)
 from app.core.database import get_db as get_db_dep
 from app.core.dependencies import get_current_user as get_current_user_dep
+from app.models.expense import Expense
 from app.models.user import User
 from app.schemas.staging import (
     StageActionRequest,
@@ -29,9 +34,15 @@ async def stage_expenses(
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> StagingResponse:
-    """Stage expenses for human review."""
+    """Stage expenses for human review with project authorization checks."""
     if not request.expense_ids:
         raise HTTPException(status_code=400, detail="No expense IDs provided")
+
+    for exp_id in request.expense_ids:
+        exp = await db.get(Expense, exp_id)
+        if not exp:
+            raise HTTPException(status_code=404, detail=f"Expense {exp_id} not found")
+        await verify_project_access(db, current_user, exp.project_id)
 
     staging_service = create_staging_service(db)
     result = await staging_service.stage_expenses(
@@ -75,15 +86,24 @@ async def list_staged_expenses(
     page: int = 1,
     page_size: int = 20,
     status_filter: str | None = None,
+    project_id: UUID | None = Query(None),
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> StagedListResponse:
-    """List staged expenses with pagination."""
+    """List staged expenses with pagination and project scoping."""
+    accessible_ids = await get_user_accessible_project_ids(db, current_user)
+    if project_id:
+        if accessible_ids is not None and project_id not in accessible_ids:
+            return StagedListResponse(items=[], total=0, page=page, page_size=page_size)
+        accessible_ids = [project_id]
+
     staging_service = create_staging_service(db)
     result = await staging_service.list_staged_expenses(
         page=page,
         page_size=page_size,
         status_filter=status_filter,
+        project_ids=accessible_ids,
+        project_id=project_id,
     )
 
     items = [
@@ -135,7 +155,13 @@ async def get_staged_expense(
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> StagedExpenseDetail:
-    """Get detailed staged expense for review."""
+    """Get detailed staged expense for review with project authorization."""
+    exp = await db.get(Expense, expense_id)
+    if not exp:
+        raise HTTPException(status_code=404, detail="Staged expense not found")
+
+    await verify_project_access(db, current_user, exp.project_id)
+
     staging_service = create_staging_service(db)
     expense = await staging_service.get_staged_expense(expense_id)
 
@@ -152,7 +178,18 @@ async def take_stage_action(
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> StageActionResponse:
-    """Approve, reject, or request changes for a staged expense."""
+    """Approve, reject, or request changes for a staged expense with project authorization."""
+    exp = await db.get(Expense, expense_id)
+    if not exp:
+        raise HTTPException(status_code=404, detail="Staged expense not found")
+
+    await verify_project_access(
+        db,
+        current_user,
+        exp.project_id,
+        ["admin", "project_manager"],
+    )
+
     staging_service = create_staging_service(db)
     reviewer_id = current_user.id
 
@@ -188,10 +225,20 @@ async def take_stage_action(
 
 @router.get("/stats", response_model=StagingStats)
 async def get_staging_stats(
+    project_id: UUID | None = Query(None),
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> StagingStats:
-    """Get staging statistics."""
+    """Get staging statistics with project scoping."""
+    accessible_ids = await get_user_accessible_project_ids(db, current_user)
+    if project_id:
+        if accessible_ids is not None and project_id not in accessible_ids:
+            return StagingStats(pending_review=0, approved=0, rejected=0, changes_requested=0, total_staged=0)
+        accessible_ids = [project_id]
+
     staging_service = create_staging_service(db)
-    stats = await staging_service.get_staging_stats()
+    stats = await staging_service.get_staging_stats(
+        project_ids=accessible_ids,
+        project_id=project_id,
+    )
     return StagingStats(**stats)

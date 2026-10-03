@@ -9,7 +9,11 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db as get_db_dep
-from app.core.dependencies import get_current_user as get_current_user_dep
+from app.core.dependencies import (
+    get_current_user as get_current_user_dep,
+    require_admin,
+    require_roles,
+)
 from app.models.user import User
 from app.schemas.notification import (
     NotificationCreate,
@@ -33,13 +37,20 @@ async def create_notification(
     db: AsyncSession = Depends(get_db_dep),
 ) -> NotificationResponse:
     """Create and send a notification."""
+    user_roles = {r.name for r in current_user.roles}
+    if "admin" not in user_roles and request.user_id and request.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot send notifications to other users without admin privileges",
+        )
+
     notification_service = create_notification_service(db)
 
     notification_id = await notification_service.send_notification(
         channel=request.channel,
         subject=request.subject,
         body=request.body,
-        user_id=request.user_id,
+        user_id=request.user_id or current_user.id,
         priority=request.priority,
         metadata=request.metadata,
         scheduled_at=request.scheduled_at,
@@ -58,7 +69,7 @@ async def create_bulk_notifications(
     subject: str | None = None,
     priority: str = "normal",
     metadata: dict[str, Any] | None = None,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_roles("admin", "project_manager")),
     db: AsyncSession = Depends(get_db_dep),
 ) -> list[NotificationResponse]:
     """Send notification to multiple users."""
@@ -120,7 +131,7 @@ async def get_notification_stats(
 
 @router.post("/process-scheduled", response_model=dict)
 async def process_scheduled_notifications(
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> dict:
     """Process scheduled notifications that are due."""
@@ -133,7 +144,7 @@ async def process_scheduled_notifications(
 @router.post("/webhooks", response_model=WebhookConfigResponse, status_code=status.HTTP_201_CREATED)
 async def create_webhook(
     request: WebhookConfigCreate,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> WebhookConfigResponse:
     """Create a webhook configuration."""
@@ -153,7 +164,7 @@ async def create_webhook(
 async def list_webhooks(
     page: int = 1,
     page_size: int = 20,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> WebhookConfigListResponse:
     """List webhook configurations."""
@@ -174,7 +185,7 @@ async def list_webhooks(
 @router.get("/webhooks/{webhook_id}", response_model=WebhookConfigResponse)
 async def get_webhook(
     webhook_id: UUID,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> WebhookConfigResponse:
     """Get webhook configuration by ID."""
@@ -188,7 +199,7 @@ async def get_webhook(
 @router.delete("/webhooks/{webhook_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_webhook(
     webhook_id: UUID,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> None:
     """Delete a webhook configuration."""
@@ -205,7 +216,7 @@ async def list_webhook_deliveries(
     webhook_id: UUID,
     page: int = 1,
     page_size: int = 20,
-    current_user: User = Depends(get_current_user_dep),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db_dep),
 ) -> WebhookDeliveryListResponse:
     """List webhook delivery attempts."""

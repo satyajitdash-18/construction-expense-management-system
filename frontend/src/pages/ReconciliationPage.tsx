@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   Search, Link, Trash2, MoreHorizontal, Eye, Check,
   ArrowUpDown, RefreshCw, ChevronLeft, ChevronRight
@@ -12,13 +12,14 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { api } from '@/services/api';
+import type { ReconciliationRecord } from '@/types/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDistanceToNow } from 'date-fns';
 
 type SortField = 'expense_id' | 'payment_event_id' | 'status' | 'match_basis' | 'match_score' | 'created_at';
 
 export default function ReconciliationPage() {
-  const [records, setRecords] = useState<any[]>([]);
+  const [records, setRecords] = useState<ReconciliationRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -31,11 +32,7 @@ export default function ReconciliationPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const { toast } = useToast();
 
-  useEffect(() => {
-    fetchRecords();
-  }, [page, search, statusFilter, projectFilter, sortField, sortDir]);
-
-  const fetchRecords = async () => {
+  const fetchRecords = useCallback(async () => {
     setLoading(true);
     try {
       const response = await api.getReconciliations({
@@ -44,14 +41,18 @@ export default function ReconciliationPage() {
         status: statusFilter || undefined,
         project_id: projectFilter || undefined,
       });
-      setRecords(response.items);
-      setTotal(response.total);
+      setRecords(response.items || []);
+      setTotal(response.total || 0);
     } catch (error) {
       console.error('Failed to fetch reconciliations:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, statusFilter, projectFilter]);
+
+  useEffect(() => {
+    fetchRecords();
+  }, [fetchRecords]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -62,13 +63,25 @@ export default function ReconciliationPage() {
     }
   };
 
+  const sortedRecords = [...records].sort((a, b) => {
+    const aVal = a[sortField] ?? '';
+    const bVal = b[sortField] ?? '';
+    if (typeof aVal === 'number' && typeof bVal === 'number') {
+      return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+    }
+    const aStr = String(aVal).toLowerCase();
+    const bStr = String(bVal).toLowerCase();
+    return sortDir === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+  });
+
   const handleAutoMatch = async () => {
     try {
       const result = await api.autoMatchBatch({ project_id: projectFilter || undefined, confidence_threshold: 0.8 });
       toast({ title: 'Auto-match completed', description: `Processed ${result.processed} records, matched ${result.matched}` });
       fetchRecords();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to auto-match', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to auto-match';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
@@ -77,8 +90,9 @@ export default function ReconciliationPage() {
       await api.unmatchReconciliation(recordId, 'Manual unmatch');
       toast({ title: 'Unmatched', description: 'Reconciliation has been unmatched' });
       fetchRecords();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to unmatch', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to unmatch';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
@@ -88,8 +102,9 @@ export default function ReconciliationPage() {
       setDeleteConfirm(null);
       toast({ title: 'Action taken', description: 'Record processed' });
       fetchRecords();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to process', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to process';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
@@ -214,9 +229,9 @@ export default function ReconciliationPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {records.map((record) => (
+                    {sortedRecords.map((record) => (
                       <TableRow key={record.id}>
-                        <TableCell>{record.expense?.code || record.expense_id}</TableCell>
+                        <TableCell>{record.expense?.project?.code || record.expense_id}</TableCell>
                         <TableCell>{record.payment_event?.upi_reference || record.payment_event?.bank_reference || 'N/A'}</TableCell>
                         <TableCell>
                           <Badge variant={getStatusVariant(record.status)}>

@@ -19,14 +19,20 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { api } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
+import type {
+  DataRetentionPolicyResponse,
+  GDPRRequestResponse,
+  AuditReportResponse,
+  ComplianceDashboardResponse,
+} from '@/types/api';
 
 export default function AuditCompliancePage() {
   const [activeTab, setActiveTab] = useState<'policies' | 'gdpr' | 'reports' | 'dashboard'>('dashboard');
   const [loading, setLoading] = useState(true);
-  const [policies, setPolicies] = useState<any[]>([]);
-  const [gdprRequests, setGdprRequests] = useState<any[]>([]);
-  const [reports, setReports] = useState<any[]>([]);
-  const [stats, setStats] = useState<any>(null);
+  const [policies, setPolicies] = useState<DataRetentionPolicyResponse[]>([]);
+  const [gdprRequests, setGdprRequests] = useState<GDPRRequestResponse[]>([]);
+  const [reports, setReports] = useState<AuditReportResponse[]>([]);
+  const [stats, setStats] = useState<ComplianceDashboardResponse | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -42,9 +48,9 @@ export default function AuditCompliancePage() {
         api.getAuditReports().catch(() => []),
         api.getComplianceDashboard().catch(() => null),
       ]);
-      setPolicies(Array.isArray(policiesRes) ? policiesRes : (policiesRes as any)?.items || []);
-      setGdprRequests(Array.isArray(gdprRes) ? gdprRes : (gdprRes as any)?.items || []);
-      setReports(Array.isArray(reportsRes) ? reportsRes : (reportsRes as any)?.items || []);
+      setPolicies(Array.isArray(policiesRes) ? policiesRes : (policiesRes as { items?: DataRetentionPolicyResponse[] })?.items || []);
+      setGdprRequests(Array.isArray(gdprRes) ? gdprRes : (gdprRes as { items?: GDPRRequestResponse[] })?.items || []);
+      setReports(Array.isArray(reportsRes) ? reportsRes.map(r => r as AuditReportResponse) : (reportsRes as { items?: AuditReportResponse[] })?.items || []);
       setStats(statsRes);
     } catch (error) {
       console.error('Failed to fetch audit compliance data:', error);
@@ -62,8 +68,8 @@ export default function AuditCompliancePage() {
       }
       toast({ title: 'Success', description: `GDPR request ${action}d successfully` });
       fetchData();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to process request', variant: 'destructive' });
+    } catch (error: unknown) {
+      toast({ title: 'Error', description: (error as Error).message || 'Failed to process request', variant: 'destructive' });
     }
   };
 
@@ -76,8 +82,8 @@ export default function AuditCompliancePage() {
       a.download = `audit-report-${reportId}.json`;
       a.click();
       window.URL.revokeObjectURL(url);
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to download report', variant: 'destructive' });
+    } catch (error: unknown) {
+      toast({ title: 'Error', description: (error as Error).message || 'Failed to download report', variant: 'destructive' });
     }
   };
 
@@ -87,8 +93,8 @@ export default function AuditCompliancePage() {
       await api.deleteAuditReport(id);
       toast({ title: 'Report deleted', description: 'Report has been deleted' });
       fetchData();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to delete report', variant: 'destructive' });
+    } catch (error: unknown) {
+      toast({ title: 'Error', description: (error as Error).message || 'Failed to delete report', variant: 'destructive' });
     }
   };
 
@@ -117,7 +123,7 @@ export default function AuditCompliancePage() {
         <p className="text-muted-foreground">Data retention, GDPR requests, and audit reporting</p>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(val) => setActiveTab(val as any)} className="w-full">
+      <Tabs value={activeTab} onValueChange={(val) => setActiveTab(val as 'policies' | 'gdpr' | 'reports' | 'dashboard')} className="w-full">
         <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
           <TabsTrigger value="policies">Retention Policies</TabsTrigger>

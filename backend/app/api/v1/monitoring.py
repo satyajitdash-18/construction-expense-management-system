@@ -6,7 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import get_db, get_redis, get_minio
+from app.core.dependencies import require_admin
+from app.models.user import User
 from app.core.metrics import (
     metrics_endpoint,
     get_content_type,
@@ -14,9 +16,7 @@ from app.core.metrics import (
     check_redis_health,
     check_minio_health,
     check_celery_health,
-    check_minio_health,
 )
-from app.core.database import get_redis, get_minio
 from app.core.celery_app import celery_app
 
 router = APIRouter(tags=["monitoring"])
@@ -38,13 +38,13 @@ async def detailed_health_check(
 ) -> dict:
     """Detailed health check with all dependencies."""
     redis = await get_redis()
-    minio = await get_minio()
+    minio = get_minio()
     
     checks = {
         "database": await check_database_health(db),
         "redis": await check_redis_health(redis),
         "minio": await check_minio_health(minio),
-        "celery": await check_celery_health(redis),
+        "celery": await check_celery_health(celery_app),
     }
     
     all_healthy = all(check.get("status") == "healthy" for check in checks.values())
@@ -83,7 +83,9 @@ async def prometheus_metrics() -> Response:
 
 
 @router.get("/metrics/system", tags=["metrics"])
-async def system_metrics() -> dict:
+async def system_metrics(
+    current_user: User = Depends(require_admin),
+) -> dict:
     """Get system-level metrics."""
     import psutil
     import os
@@ -115,7 +117,9 @@ async def system_metrics() -> dict:
 
 
 @router.get("/metrics/celery", tags=["metrics"])
-async def celery_metrics() -> dict:
+async def celery_metrics(
+    current_user: User = Depends(require_admin),
+) -> dict:
     """Get Celery worker metrics."""
     from app.core.celery_app import celery_app
     
@@ -149,85 +153,12 @@ async def celery_metrics() -> dict:
 
 
 @router.get("/metrics/business", tags=["metrics"])
-async def business_metrics() -> dict:
-    """Get business-level metrics."""
-    from app.core.database import get_db
-    from sqlalchemy import func, select
-    from app.models.expense import Expense
-    from app.models.project import Project
-    from app.models.reconciliation_record import ReconciliationRecord
-    from app.models.payment_event import PaymentEvent
-    
-    db = get_db()
-    # Note: In real implementation, use proper dependency injection
-    
-    try:
-        # Total expenses
-        total_expenses = await db.scalar(select(func.count(Expense.id)))
-        
-        # Total amount
-        total_amount = await db.scalar(select(func.sum(Expense.total)))
-        
-        # By status
-        status_counts = {}
-        for status in ["RECEIVED", "VALIDATED", "PROCESSING", "EXTRACTED", "RECONCILED", "POSTED", "FAILED"]:
-            count = await db.scalar(
-                select(func.count(Expense.id)).where(Expense.lifecycle_status == status)
-            )
-            status_counts[status] = count or 0
-        
-        # Total projects
-        total_projects = await db.scalar(select(func.count(Project.id)))
-        active_projects = await db.scalar(
-            select(func.count(Project.id)).where(Project.status == "active")
-        )
-        
-        # Reconciliation stats
-        total_reconciled = await db.scalar(
-            select(func.count(ReconciliationRecord.id)).where(
-                ReconciliationRecord.status == "MATCHED"
-            )
-        )
-        
-        pending_reconciliation = await db.scalar(
-            select(func.count(ReconciliationRecord.id)).where(
-                ReconciliationRecord.status == "UNMATCHED"
-            )
-        )
-        
-        # Payment events
-        total_payments = await db.scalar(select(func.count(PaymentEvent.id)))
-        total_payment_amount = await db.scalar(select(func.sum(PaymentEvent.amount)))
-        
-        return {
-            "expenses": {
-                "total": total_expenses or 0,
-                "total_amount": float(total_amount or 0),
-                "by_status": status_counts,
-            },
-            "projects": {
-                "total": total_projects or 0,
-                "active": active_projects or 0,
-            },
-            "reconciliation": {
-                "matched": total_reconciled or 0,
-                "pending": pending_reconciliation or 0,
-            },
-            "payments": {
-                "total": total_payments or 0,
-                "total_amount": float(total_payment_amount or 0),
-            },
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@router.get("/metrics/business", tags=["metrics"])
 async def business_metrics_endpoint(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
 ) -> dict:
     """Get business metrics."""
-    from sqlalchemy import func, select
+    from sqlalchemy import func, select, String
     from app.models.expense import Expense
     from app.models.project import Project
     from app.models.reconciliation_record import ReconciliationRecord
@@ -244,26 +175,26 @@ async def business_metrics_endpoint(
         status_counts = {}
         for status in ["RECEIVED", "VALIDATED", "PROCESSING", "EXTRACTED", "RECONCILED", "POSTED", "FAILED"]:
             count = await db.scalar(
-                select(func.count(Expense.id)).where(Expense.lifecycle_status == status)
+                select(func.count(Expense.id)).where(Expense.lifecycle_status.cast(String) == status)
             )
             status_counts[status] = count or 0
         
         # Total projects
         total_projects = await db.scalar(select(func.count(Project.id)))
         active_projects = await db.scalar(
-            select(func.count(Project.id)).where(Project.status == "active")
+            select(func.count(Project.id)).where(Project.status.cast(String) == "active")
         )
         
         # Reconciliation stats
         total_reconciled = await db.scalar(
             select(func.count(ReconciliationRecord.id)).where(
-                ReconciliationRecord.status == "MATCHED"
+                ReconciliationRecord.status.cast(String) == "MATCHED"
             )
         )
         
         pending_reconciliation = await db.scalar(
             select(func.count(ReconciliationRecord.id)).where(
-                ReconciliationRecord.status == "UNMATCHED"
+                ReconciliationRecord.status.cast(String) == "UNMATCHED"
             )
         )
         

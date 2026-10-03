@@ -46,12 +46,12 @@ class OCRJobStatus(BaseModel):
     """OCR job status response."""
 
     id: UUID
-    source_event_id: UUID | None
+    source_event_id: UUID | None = None
     status: str
-    result: OCRResult | None
-    error_message: str | None
+    result: dict[str, Any] | OCRResult | None = None
+    error_message: str | None = None
     created_at: datetime
-    completed_at: datetime | None
+    completed_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

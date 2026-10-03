@@ -44,9 +44,9 @@ class AuthService:
 
         if role_names:
             roles = await self.user_repo.get_roles_by_names(role_names)
-            if len(roles) != len(role_names):
-                found = {r.name for r in roles}
-                missing = set(role_names) - found
+            found = {r.name for r in roles}
+            missing = set(role_names) - found
+            if missing:
                 raise ValueError(f"Roles not found: {missing}")
             user = await self.user_repo.assign_roles(user, roles)
 
@@ -54,6 +54,10 @@ class AuthService:
 
     async def get_user_by_id(self, user_id: UUID) -> User | None:
         return await self.user_repo.get_by_id(user_id)
+
+    async def create_token_pair_with_version(self, user: User) -> tuple[str, str, int]:
+        """Create access and refresh token pair with token version tracking."""
+        return await create_token_pair_with_version(str(user.id), user.email)
 
     async def create_refresh_token_record(
         self,
@@ -74,19 +78,21 @@ class AuthService:
         await self.user_repo.session.flush()
         return refresh_token
 
-    async def verify_refresh_token(self, refresh_token: str) -> dict:
+    def verify_refresh_token(self, refresh_token: str) -> dict:
         payload = decode_token(refresh_token)
         if payload.get("type") != "refresh":
             raise ValueError("Invalid token type, refresh token required")
         return payload
 
     async def validate_refresh_token_record(self, jti: str, user_id: UUID) -> RefreshToken | None:
-        """Validate that a refresh token exists, is not revoked, and belongs to the user."""
+        """Validate that a refresh token exists, is not revoked, and belongs to the user with a row lock."""
         result = await self.user_repo.session.execute(
-            select(RefreshToken).where(
+            select(RefreshToken)
+            .where(
                 RefreshToken.jti == jti,
                 RefreshToken.user_id == user_id,
             )
+            .with_for_update()
         )
         token_record = result.scalar_one_or_none()
         if not token_record:

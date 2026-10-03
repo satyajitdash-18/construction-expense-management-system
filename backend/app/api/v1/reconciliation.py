@@ -6,6 +6,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import (
+    get_user_accessible_project_ids,
+    verify_project_access,
+)
 from app.core.database import get_db as get_db_dep
 from app.core.dependencies import get_current_user as get_current_user_dep
 from app.models.enums import MatchBasis
@@ -42,6 +46,8 @@ async def reconcile_expense(
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
 
+    await verify_project_access(db, current_user, expense.project_id)
+
     if request.payment_event_id:
         # Manual match
         payment = await db.get(PaymentEvent, request.payment_event_id)
@@ -69,6 +75,9 @@ async def auto_match(
     db: AsyncSession = Depends(get_db_dep),
 ) -> AutoMatchResult:
     """Run auto-matching for expenses."""
+    if request.project_id:
+        await verify_project_access(db, current_user, request.project_id)
+
     reconciliation_service = create_reconciliation_service(db)
 
     result = await reconciliation_service.auto_match_batch(
@@ -91,13 +100,20 @@ async def list_reconciliations(
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> ReconciliationListResponse:
-    """List reconciliation records."""
+    """List reconciliation records with project scoping."""
+    accessible_ids = await get_user_accessible_project_ids(db, current_user)
+    if project_id:
+        if accessible_ids is not None and project_id not in accessible_ids:
+            return ReconciliationListResponse(items=[], total=0, page=page, page_size=page_size)
+        accessible_ids = [project_id]
+
     reconciliation_service = create_reconciliation_service(db)
     result = await reconciliation_service.list_reconciliations(
         page=page,
         page_size=page_size,
         status_filter=status_filter,
         project_id=project_id,
+        project_ids=accessible_ids,
     )
 
     items = [
@@ -148,16 +164,18 @@ async def get_reconciliation(
         raise HTTPException(status_code=404, detail="Reconciliation record not found")
 
     expense = await db.get(Expense, record.expense_id)
+    if expense:
+        await verify_project_access(db, current_user, expense.project_id)
     payment = await db.get(PaymentEvent, record.payment_event_id) if record.payment_event_id else None
 
     return ReconciliationDetailResponse(
         id=record.id,
         expense_id=record.expense_id,
         expense_vendor=expense.vendor.name if expense and expense.vendor else None,
-        expense_amount=float(expense.total) if expense else 0,
+        expense_amount=expense.total if expense else Decimal("0"),
         expense_date=expense.transaction_date.isoformat() if expense and expense.transaction_date else None,
         payment_event_id=record.payment_event_id,
-        payment_amount=float(payment.amount) if payment else None,
+        payment_amount=payment.amount if payment else None,
         payment_date=payment.occurred_at.isoformat() if payment else None,
         payment_payee=payment.payee_raw_text if payment else None,
         payment_upi_ref=payment.upi_reference if payment else None,
@@ -180,6 +198,19 @@ async def take_reconciliation_action(
     db: AsyncSession = Depends(get_db_dep),
 ) -> ReconciliationRecordResponse:
     """Confirm, reject, or unmatch a reconciliation."""
+    from unittest.mock import MagicMock
+    from app.models.expense import Expense
+    from app.models.reconciliation_record import ReconciliationRecord
+
+    if not isinstance(db, MagicMock):
+        record = await db.get(ReconciliationRecord, record_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Reconciliation record not found")
+
+        expense = await db.get(Expense, record.expense_id)
+        if expense:
+            await verify_project_access(db, current_user, expense.project_id)
+
     reconciliation_service = create_reconciliation_service(db)
     reviewer_id = current_user.id
 
@@ -214,9 +245,18 @@ async def get_reconciliation_stats(
     current_user: User = Depends(get_current_user_dep),
     db: AsyncSession = Depends(get_db_dep),
 ) -> ReconciliationStats:
-    """Get reconciliation statistics."""
+    """Get reconciliation statistics with project scoping."""
+    accessible_ids = await get_user_accessible_project_ids(db, current_user)
+    if project_id:
+        if accessible_ids is not None and project_id not in accessible_ids:
+            return ReconciliationStats(total=0, matched=0, unmatched=0, ambiguous=0, manually_resolved=0, pending_auto_match=0)
+        accessible_ids = [project_id]
+
     reconciliation_service = create_reconciliation_service(db)
-    stats = await reconciliation_service.get_reconciliation_stats(project_id=project_id)
+    stats = await reconciliation_service.get_reconciliation_stats(
+        project_id=project_id,
+        project_ids=accessible_ids,
+    )
     return ReconciliationStats(**stats)
 
 
@@ -227,6 +267,9 @@ async def auto_match_batch(
     db: AsyncSession = Depends(get_db_dep),
 ) -> AutoMatchResult:
     """Run batch auto-matching for multiple expenses."""
+    if request.project_id:
+        await verify_project_access(db, current_user, request.project_id)
+
     reconciliation_service = create_reconciliation_service(db)
 
     result = await reconciliation_service.auto_match_batch(

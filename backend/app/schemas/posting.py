@@ -46,8 +46,25 @@ class LedgerEntryResponse(BaseModel):
     posted_at: datetime
     source_audit_event_id: UUID | None = None
     description: str | None = None
+    is_reversal: bool = False
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ReversalRequest(BaseModel):
+    """Request to reverse an existing expense posting."""
+
+    expense_id: UUID
+    reason: str | None = None
+
+
+class ReversalResponse(BaseModel):
+    """Response after reversing a posting."""
+
+    expense_id: UUID
+    status: str
+    message: str
+    ledger_entries: list[LedgerEntryResponse]
 
 
 class PostingDetailResponse(BaseModel):

@@ -1,6 +1,7 @@
 """Reconciliation schemas for expense-payment matching."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -11,7 +12,7 @@ class ReconciliationCandidate(BaseModel):
     """Candidate payment event for reconciliation."""
 
     payment_event_id: UUID
-    amount: float
+    amount: Decimal | float
     occurred_at: str
     payee_raw_text: str
     upi_reference: str | None = None
@@ -63,10 +64,10 @@ class ReconciliationDetailResponse(BaseModel):
     id: UUID
     expense_id: UUID
     expense_vendor: str | None = None
-    expense_amount: float
+    expense_amount: Decimal | float
     expense_date: str | None = None
     payment_event_id: UUID | None
-    payment_amount: float | None = None
+    payment_amount: Decimal | float | None = None
     payment_date: str | None = None
     payment_payee: str | None = None
     payment_upi_ref: str | None = None

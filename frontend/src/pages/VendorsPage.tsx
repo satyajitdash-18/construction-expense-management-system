@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Plus, Search, Building2, Trash2, MoreHorizontal, Eye, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -15,6 +15,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { api } from '@/services/api';
+import type { Vendor } from '@/types/api';
 import { useToast } from '@/hooks/use-toast';
 
 const vendorSchema = z.object({
@@ -33,14 +34,14 @@ const vendorSchema = z.object({
 type VendorFormData = z.infer<typeof vendorSchema>;
 
 export default function VendorsPage() {
-  const [vendors, setVendors] = useState<any[]>([]);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const pageSize = 10;
   const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingVendor, setEditingVendor] = useState<any | null>(null);
+  const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   const { toast } = useToast();
@@ -49,11 +50,7 @@ export default function VendorsPage() {
   });
   const { reset } = form;
 
-  useEffect(() => {
-    fetchVendors();
-  }, [page, search]);
-
-  const fetchVendors = async () => {
+  const fetchVendors = useCallback(async () => {
     setLoading(true);
     try {
       const response = await api.getVendors({ page, page_size: pageSize, search: search || undefined });
@@ -64,7 +61,11 @@ export default function VendorsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, search]);
+
+  useEffect(() => {
+    fetchVendors();
+  }, [fetchVendors]);
 
   const onVendorSubmit = async (data: VendorFormData) => {
     try {
@@ -78,8 +79,9 @@ export default function VendorsPage() {
       setDialogOpen(false);
       setEditingVendor(null);
       fetchVendors();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to save vendor', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save vendor';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
@@ -88,12 +90,13 @@ export default function VendorsPage() {
       await api.deleteVendor(id);
       setDeleteConfirm(null);
       fetchVendors();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to delete vendor', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete vendor';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
-  const handleEdit = (vendor: any) => {
+  const handleEdit = (vendor: Vendor) => {
     setEditingVendor(vendor);
     reset({
       name: vendor.name,

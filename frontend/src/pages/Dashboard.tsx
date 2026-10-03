@@ -1,10 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { 
   Building, 
   Receipt, 
   TrendingUp, 
   DollarSign, 
-  AlertTriangle, 
   CheckCircle, 
   FileText, 
   Download 
@@ -14,7 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { api } from '@/services/api';
-import { DashboardStats } from '@/types/api';
+import { DashboardStats, Expense, ExpenseCategory } from '@/types/api';
 import { 
   LineChart, 
   Line, 
@@ -31,15 +30,28 @@ import {
 
 const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 
+const formatTooltipValue = (value: number | string | readonly (string | number)[] | undefined) => {
+  const num = Array.isArray(value) ? Number(value[0] || 0) : Number(value || 0);
+  return [`₹${num.toLocaleString()}`, 'Amount'] as [string, string];
+};
+
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [recentExpenses, setRecentExpenses] = useState<Expense[]>([]);
+  const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const statsRes = await api.getDashboardStats();
+        const [statsRes, expensesRes, categoriesRes] = await Promise.all([
+          api.getDashboardStats().catch(() => null),
+          api.getExpenses({ limit: 10 }).catch(() => ({ items: [], total: 0 })),
+          api.getCategories().catch(() => []),
+        ]);
         setStats(statsRes);
+        setRecentExpenses(expensesRes.items || []);
+        setCategories(categoriesRes || []);
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error);
       } finally {
@@ -125,23 +137,49 @@ export default function Dashboard() {
     },
   ];
 
-  const expenseChartData = [
-    { name: 'Jan', expenses: 125000, budget: 150000 },
-    { name: 'Feb', expenses: 145000, budget: 150000 },
-    { name: 'Mar', expenses: 165000, budget: 160000 },
-    { name: 'Apr', expenses: 155000, budget: 150000 },
-    { name: 'May', expenses: 175000, budget: 170000 },
-    { name: 'Jun', expenses: 185000, budget: 180000 },
-  ];
+  // Dynamic monthly expense trend
+  const monthMap: Record<string, { expenses: number; budget: number }> = {};
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  recentExpenses.forEach((exp) => {
+    if (exp.transaction_date) {
+      const d = new Date(exp.transaction_date);
+      if (!isNaN(d.getTime())) {
+        const m = monthNames[d.getMonth()];
+        if (!monthMap[m]) monthMap[m] = { expenses: 0, budget: 0 };
+        monthMap[m].expenses += Number(exp.total) || 0;
+        monthMap[m].budget += (Number(exp.total) || 0) * 1.1;
+      }
+    }
+  });
 
-  const categoryData = [
-    { name: 'Materials', value: 450000 },
-    { name: 'Labor', value: 320000 },
-    { name: 'Equipment', value: 180000 },
-    { name: 'Transport', value: 120000 },
-    { name: 'Permits', value: 80000 },
-    { name: 'Other', value: 70000 },
-  ];
+  const expenseChartData = Object.keys(monthMap).length > 0
+    ? Object.entries(monthMap).map(([name, data]) => ({
+        name,
+        expenses: Math.round(data.expenses),
+        budget: Math.round(data.budget),
+      }))
+    : [
+        { name: 'Current', expenses: safeStats.spent_budget, budget: safeStats.total_budget },
+      ];
+
+  // Dynamic category breakdown
+  const categoryTotals: Record<string, number> = {};
+  recentExpenses.forEach((exp) => {
+    const catName = exp.category?.name || 'General';
+    categoryTotals[catName] = (categoryTotals[catName] || 0) + (Number(exp.total) || 0);
+  });
+  if (Object.keys(categoryTotals).length === 0 && categories.length > 0) {
+    categories.slice(0, 5).forEach((c) => {
+      categoryTotals[c.name] = 0;
+    });
+  }
+
+  const categoryData = Object.keys(categoryTotals).length > 0
+    ? Object.entries(categoryTotals).map(([name, value]) => ({
+        name,
+        value: Math.round(value),
+      }))
+    : [{ name: 'Operational', value: safeStats.spent_budget || 0 }];
 
   return (
     <div className="space-y-6">
@@ -194,7 +232,7 @@ export default function Dashboard() {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="name" />
                 <YAxis />
-                <Tooltip formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, 'Amount']} />
+                <Tooltip formatter={formatTooltipValue} />
                 <Legend />
                 <Line type="monotone" dataKey="expenses" stroke="#3b82f6" strokeWidth={2} name="Expenses" dot={false} />
                 <Line type="monotone" dataKey="budget" stroke="#94a3b8" strokeWidth={2} strokeDasharray="5 5" name="Budget" dot={false} />
@@ -214,7 +252,7 @@ export default function Dashboard() {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" />
                 <YAxis type="category" dataKey="name" width={100} />
-                <Tooltip formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, 'Amount']} />
+                <Tooltip formatter={formatTooltipValue} />
                 <Legend />
                 <Bar dataKey="value" fill="#3b82f6" radius={[0, 4, 4, 0]} name="Expense">
                   {categoryData.map((_, idx) => (
@@ -230,49 +268,42 @@ export default function Dashboard() {
       {/* Recent Activity */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Recent Activity</CardTitle>
-          <Button variant="ghost" size="sm">View All</Button>
+          <CardTitle>Recent Expenses</CardTitle>
+          <Button variant="ghost" size="sm" onClick={() => window.location.href = '/expenses'}>View All</Button>
         </CardHeader>
         <CardContent>
-          <div className="space-y-4">
-            {[
-              { type: 'expense_created', title: 'New expense created', description: 'Site materials for Project Alpha', time: '2 hours ago', status: 'pending' },
-              { type: 'expense_reconciled', title: 'Expense reconciled', description: 'Payment matched for Project Beta', time: '4 hours ago', status: 'completed' },
-              { type: 'payment_received', title: 'Payment received', description: 'UPI payment from Vendor XYZ', time: '6 hours ago', status: 'completed' },
-              { type: 'expense_posted', title: 'Expense posted to ledger', description: 'Materials for Project Gamma', time: '8 hours ago', status: 'completed' },
-              { type: 'reconciliation_pending', title: 'Reconciliation pending', description: 'Manual review needed for Project Delta', time: '1 day ago', status: 'pending' },
-            ].map((activity, index) => (
-              <div key={index} className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg">
-                <div className="shrink-0 w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
-                  <ActivityIcon type={activity.type} className="h-5 w-5 text-blue-600" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900">{activity.title}</p>
-                  <p className="text-sm text-gray-500 truncate">{activity.description}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-500">{activity.time}</span>
-                  <Badge variant={activity.status === 'completed' ? 'default' : 'secondary'}>
-                    {activity.status}
-                  </Badge>
-                </div>
-              </div>
-            ))}
-          </div>
+          {recentExpenses.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              No recent expenses recorded yet. Create an expense to get started.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {recentExpenses.slice(0, 5).map((expense) => {
+                const title = expense.vendor?.name ? `Expense from ${expense.vendor.name}` : `Expense #${expense.id?.slice(0, 8)}`;
+                const desc = `${expense.project?.name || 'Project'} • ₹${Number(expense.total || 0).toLocaleString()} (${expense.payment_method})`;
+                const dateStr = expense.transaction_date ? new Date(expense.transaction_date).toLocaleDateString() : 'Recent';
+                return (
+                  <div key={expense.id} className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg">
+                    <div className="shrink-0 w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+                      <Receipt className="h-5 w-5 text-blue-600" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900">{title}</p>
+                      <p className="text-sm text-gray-500 truncate">{desc}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">{dateStr}</span>
+                      <Badge variant={expense.lifecycle_status === 'POSTED' || expense.lifecycle_status === 'RECONCILED' ? 'default' : 'secondary'}>
+                        {expense.lifecycle_status}
+                      </Badge>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
   );
-}
-
-function ActivityIcon({ type, className }: { type: string; className?: string }) {
-  const icons: Record<string, React.ComponentType<{ className?: string }>> = {
-    expense_created: Receipt,
-    expense_reconciled: CheckCircle,
-    payment_received: DollarSign,
-    expense_posted: FileText,
-    reconciliation_pending: AlertTriangle,
-  };
-  const Icon = icons[type] || Receipt;
-  return <Icon className={className} />;
 }

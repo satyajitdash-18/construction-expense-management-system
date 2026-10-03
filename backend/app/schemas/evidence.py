@@ -37,7 +37,7 @@ class EvidenceResponse(BaseModel):
     content_type: str
     size: int
     checksum: str
-    metadata: dict[str, Any] | None
+    metadata: dict[str, Any] | None = Field(default=None, validation_alias="file_metadata")
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

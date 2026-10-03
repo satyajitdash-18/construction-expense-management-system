@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import verify_project_access
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_project_manager
 from app.schemas.project import BudgetCreate
@@ -29,11 +30,8 @@ async def create_budget(
     current_user: "User" = Depends(require_project_manager),
 ) -> dict:
     """Create a budget entry for a project (project_id provided in body)."""
+    await verify_project_access(db, current_user, request.project_id, ["admin", "project_manager"])
     service = ProjectService(db)
-    project = await service.get_project(request.project_id)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
     budget = await service.set_budget(
         project_id=request.project_id,
         amount=request.amount,
@@ -42,6 +40,7 @@ async def create_budget(
         effective_from=request.effective_from,
         effective_to=request.effective_to,
     )
+    await db.commit()
     return {
         "id": str(budget.id),
         "project_id": str(request.project_id),

@@ -65,13 +65,29 @@ class ExpenseCreate(BaseModel):
             if "gstin_supplier" not in data and "vendor_gstin" in data:
                 data["gstin_supplier"] = data["vendor_gstin"]
 
-            # --- Validate total is non-negative ---
+            # --- Validate non-negative Decimal values and financial balancing invariant ---
             try:
-                total_val = float(str(data.get("total", 0)))
-                if total_val < 0:
+                dec_total = Decimal(str(data.get("total", 0)))
+                if dec_total < Decimal("0"):
                     raise ValueError("total must be non-negative")
+                dec_subtotal = Decimal(str(data.get("subtotal", dec_total)))
+                if dec_subtotal < Decimal("0"):
+                    raise ValueError("subtotal must be non-negative")
+                dec_tax = Decimal(str(data.get("tax_amount", 0)))
+                if dec_tax < Decimal("0"):
+                    raise ValueError("tax_amount must be non-negative")
+
+                if abs((dec_subtotal + dec_tax) - dec_total) > Decimal("0.05"):
+                    if "tax_amount" not in data or data["tax_amount"] is None:
+                        data["subtotal"] = dec_total
+                        data["tax_amount"] = Decimal("0.00")
+                    else:
+                        raise ValueError(
+                            f"Financial invariant violated: subtotal ({dec_subtotal}) + tax_amount ({dec_tax}) "
+                            f"must equal total ({dec_total})"
+                        )
             except (TypeError, ValueError) as e:
-                if "non-negative" in str(e):
+                if "must be non-negative" in str(e) or "Financial invariant" in str(e):
                     raise
 
             # --- Validate GSTIN format (15-char alphanumeric pattern) ---

@@ -1,6 +1,4 @@
-'use client';
-
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Plus, Search, MoreHorizontal, Trash2, Eye, Building, ChevronLeft, ChevronRight, ArrowUpDown, X } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -14,15 +12,20 @@ import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/services/api';
+import type { Project } from '@/types/api';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
+const projectFormSchema = z.object({
+  name: z.string().min(1, 'Project name is required'),
+  code: z.string().min(2, 'Project code must be at least 2 characters'),
+});
 
-
+type ProjectFormData = z.infer<typeof projectFormSchema>;
 
 export default function ProjectsPage() {
-  const [projects, setProjects] = useState<any[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -31,24 +34,17 @@ export default function ProjectsPage() {
   const [sortBy, setSortBy] = useState<'name' | 'code' | 'status' | 'created_at'>('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingProject, setEditingProject] = useState<any | null>(null);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [budgetDialogOpen, setBudgetDialogOpen] = useState(false);
-  const [selectedProject, setSelectedProject] = useState<any | null>(null);
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
 
-  const form = useForm<any>({
-    resolver: zodResolver(z.object({
-      name: z.string().min(1, 'Project name is required'),
-      code: z.string().min(2, 'Project code must be at least 2 characters'),
-    })),
+  const form = useForm<ProjectFormData>({
+    resolver: zodResolver(projectFormSchema),
   });
   const { reset } = form;
 
-  useEffect(() => {
-    fetchProjects();
-  }, [page, search, statusFilter, sortBy, sortOrder]);
-
-  const fetchProjects = async () => {
+  const fetchProjects = useCallback(async () => {
     setLoading(true);
     try {
       const response = await api.getProjects({
@@ -56,14 +52,18 @@ export default function ProjectsPage() {
         page_size: 10,
         status: statusFilter || undefined,
       });
-      setProjects(response.items);
-      setTotal(response.total);
+      setProjects(response.items || []);
+      setTotal(response.total || 0);
     } catch (error) {
       console.error('Failed to fetch projects:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, statusFilter]);
+
+  useEffect(() => {
+    fetchProjects();
+  }, [fetchProjects]);
 
   const handleSort = (field: 'name' | 'code' | 'status' | 'created_at') => {
     if (sortBy === field) {
@@ -74,7 +74,13 @@ export default function ProjectsPage() {
     }
   };
 
-  const handleCreate = async (data: any) => {
+  const sortedProjects = [...projects].sort((a, b) => {
+    const aVal = String(a[sortBy] ?? '').toLowerCase();
+    const bVal = String(b[sortBy] ?? '').toLowerCase();
+    return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+  });
+
+  const handleCreate = async (data: ProjectFormData) => {
     try {
       await api.createProject(data);
       reset();
@@ -85,9 +91,10 @@ export default function ProjectsPage() {
     }
   };
 
-  const handleUpdate = async (data: any) => {
+  const handleUpdate = async (data: ProjectFormData) => {
+    if (!editingProject) return;
     try {
-      await api.updateProject(editingProject!.id, data);
+      await api.updateProject(editingProject.id, data);
       reset();
       setDialogOpen(false);
       setEditingProject(null);
@@ -211,7 +218,7 @@ export default function ProjectsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {projects.map((project) => (
+                    {sortedProjects.map((project) => (
                       <TableRow key={project.id}>
                         <TableCell className="font-medium">{project.name}</TableCell>
                         <TableCell className="font-mono text-sm">{project.code}</TableCell>

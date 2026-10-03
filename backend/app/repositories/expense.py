@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -42,6 +44,7 @@ class ExpenseRepository:
     async def list(
         self,
         project_id: UUID | None = None,
+        project_ids: list[UUID] | None = None,
         vendor_id: UUID | None = None,
         category_id: UUID | None = None,
         status: str | None = None,
@@ -58,6 +61,8 @@ class ExpenseRepository:
         )
         if project_id:
             query = query.where(Expense.project_id == project_id)
+        elif project_ids is not None:
+            query = query.where(Expense.project_id.in_(project_ids))
         if vendor_id:
             query = query.where(Expense.vendor_id == vendor_id)
         if category_id:
@@ -75,6 +80,7 @@ class ExpenseRepository:
     async def count(
         self,
         project_id: UUID | None = None,
+        project_ids: list[UUID] | None = None,
         vendor_id: UUID | None = None,
         category_id: UUID | None = None,
         status: str | None = None,
@@ -82,6 +88,8 @@ class ExpenseRepository:
         query = select(func.count(Expense.id))
         if project_id:
             query = query.where(Expense.project_id == project_id)
+        elif project_ids is not None:
+            query = query.where(Expense.project_id.in_(project_ids))
         if vendor_id:
             query = query.where(Expense.vendor_id == vendor_id)
         if category_id:

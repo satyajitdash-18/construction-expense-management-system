@@ -1,9 +1,12 @@
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Project, ProjectStatus
+from app.models.project_member import ProjectMember
 from app.repositories.project import ProjectRepository
 
 if TYPE_CHECKING:
@@ -40,13 +43,23 @@ class ProjectService:
     async def list_projects(
         self,
         status_filter: str | None = None,
+        project_ids: list[UUID] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Project]:
-        return await self.repo.list(status_filter=status_filter, limit=limit, offset=offset)
+        return await self.repo.list_projects(
+            status_filter=status_filter,
+            project_ids=project_ids,
+            limit=limit,
+            offset=offset,
+        )
 
-    async def get_project_count(self, status_filter: str | None = None) -> int:
-        return await self.repo.count(status_filter=status_filter)
+    async def get_project_count(
+        self,
+        status_filter: str | None = None,
+        project_ids: list[UUID] | None = None,
+    ) -> int:
+        return await self.repo.count(status_filter=status_filter, project_ids=project_ids)
 
     async def update_project(
         self,
@@ -78,7 +91,7 @@ class ProjectService:
     async def set_budget(
         self,
         project_id: UUID,
-        amount: float,
+        amount: Decimal,
         currency: str = "INR",
         category_id: UUID | None = None,
         effective_from: str | None = None,
@@ -105,11 +118,57 @@ class ProjectService:
         return budget
 
     async def get_budgets(self, project_id: UUID) -> list["ProjectBudget"]:
-        from sqlalchemy import select
-
         from app.models.project_budget import ProjectBudget
 
         result = await self.session.execute(
             select(ProjectBudget).where(ProjectBudget.project_id == project_id)
+        )
+        return list(result.scalars().all())
+
+    async def add_member(
+        self,
+        project_id: UUID,
+        user_id: UUID,
+        role: str = "site_user",
+    ) -> ProjectMember:
+        """Add or update a project member."""
+        result = await self.session.execute(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user_id,
+            )
+        )
+        member = result.scalar_one_or_none()
+        if member:
+            member.role = role
+        else:
+            member = ProjectMember(
+                project_id=project_id,
+                user_id=user_id,
+                role=role,
+            )
+            self.session.add(member)
+        await self.session.flush()
+        return member
+
+    async def remove_member(self, project_id: UUID, user_id: UUID) -> bool:
+        """Remove a user from project members."""
+        result = await self.session.execute(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user_id,
+            )
+        )
+        member = result.scalar_one_or_none()
+        if not member:
+            return False
+        await self.session.delete(member)
+        await self.session.flush()
+        return True
+
+    async def list_members(self, project_id: UUID) -> list[ProjectMember]:
+        """List all members of a project."""
+        result = await self.session.execute(
+            select(ProjectMember).where(ProjectMember.project_id == project_id)
         )
         return list(result.scalars().all())

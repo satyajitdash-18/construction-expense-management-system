@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Plus, Bell, Eye, Trash2, MoreHorizontal, ArrowUpDown, Globe, Edit, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -14,6 +14,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { api } from '@/services/api';
+import type { WebhookConfig, NotificationItem, NotificationStats } from '@/types/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -21,36 +22,30 @@ const webhookSchema = z.object({
   url: z.string().url('Invalid URL'),
   events: z.array(z.string()).min(1, 'At least one event is required'),
   secret: z.string().optional(),
-  is_active: z.boolean().default(true),
+  is_active: z.boolean(),
 });
 
 type WebhookFormData = z.infer<typeof webhookSchema>;
 
 export default function NotificationsPage() {
-  const [notifications, setNotifications] = useState<any[]>([]);
-  const [webhooks, setWebhooks] = useState<any[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [webhooks, setWebhooks] = useState<WebhookConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const pageSize = 20;
   const [statusFilter, setStatusFilter] = useState('');
   const [webhookDialogOpen, setWebhookDialogOpen] = useState(false);
-  const [editingWebhook, setEditingWebhook] = useState<any | null>(null);
-  const [stats, setStats] = useState<any>(null);
+  const [editingWebhook, setEditingWebhook] = useState<WebhookConfig | null>(null);
+  const [stats, setStats] = useState<NotificationStats | null>(null);
   const { toast } = useToast();
 
-  const webhookForm = useForm<any>({
-    resolver: zodResolver(webhookSchema) as any,
-    defaultValues: { is_active: true, events: [] },
+  const webhookForm = useForm<WebhookFormData>({
+    resolver: zodResolver(webhookSchema),
+    defaultValues: { url: '', is_active: true, events: [], secret: '' },
   });
 
-  useEffect(() => {
-    fetchNotifications();
-    fetchWebhooks();
-    fetchStats();
-  }, [page, statusFilter]);
-
-  const fetchNotifications = async () => {
+  const fetchNotifications = useCallback(async () => {
     setLoading(true);
     try {
       const result = await api.getNotifications({ page, page_size: pageSize, status: statusFilter || undefined });
@@ -61,25 +56,31 @@ export default function NotificationsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, statusFilter]);
 
-  const fetchWebhooks = async () => {
+  const fetchWebhooks = useCallback(async () => {
     try {
       const result = await api.getWebhooks();
-      setWebhooks(result.items || result || []);
+      setWebhooks(result.items || []);
     } catch (error) {
       console.error('Failed to fetch webhooks:', error);
     }
-  };
+  }, []);
 
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async () => {
     try {
       const statsRes = await api.getNotificationStats();
       setStats(statsRes);
     } catch (error) {
       console.error('Failed to fetch stats:', error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchNotifications();
+    fetchWebhooks();
+    fetchStats();
+  }, [fetchNotifications, fetchWebhooks, fetchStats]);
 
   const handleSort = (_field: string) => {
     // sort handled client-side in future
@@ -100,8 +101,9 @@ export default function NotificationsPage() {
       setEditingWebhook(null);
       webhookForm.reset();
       fetchWebhooks();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to save webhook', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save webhook';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
@@ -111,12 +113,13 @@ export default function NotificationsPage() {
       await api.deleteWebhook(id);
       toast({ title: 'Webhook deleted' });
       fetchWebhooks();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to delete webhook', variant: 'destructive' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete webhook';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     }
   };
 
-  const handleEditWebhook = (webhook: any) => {
+  const handleEditWebhook = (webhook: WebhookConfig) => {
     setEditingWebhook(webhook);
     webhookForm.reset({
       url: webhook.url,
